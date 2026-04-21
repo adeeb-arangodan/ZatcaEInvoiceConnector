@@ -1,3 +1,5 @@
+import base64
+import json
 import shutil
 import subprocess
 import tempfile
@@ -81,6 +83,20 @@ def encrypt_private_key(private_key_pem):
 def decrypt_private_key(encrypted_private_key):
     cipher = _get_device_key_cipher()
     return cipher.decrypt(encrypted_private_key.encode("ascii")).decode("ascii")
+
+
+def _get_requests_module():
+    try:
+        import requests
+    except ImportError as exc:
+        raise ImproperlyConfigured(
+            "The 'requests' package is required for ZATCA compliance API calls."
+        ) from exc
+    return requests
+
+
+def encode_to_base64(value):
+    return base64.b64encode(value.encode("utf-8")).decode("ascii")
 
 
 def ensure_device_keys(device):
@@ -173,5 +189,45 @@ def generate_device_csr(device):
         return csr_path.read_text(encoding="ascii")
 
 
+def request_compliance_csid(csr, zatca_otp):
+    requests = _get_requests_module()
+    csid_endpoint_url = (
+        f"{settings.ZATCA_SERVER_URL.rstrip('/')}"
+        f"/{settings.ZATCA_COMPLIANCE_API_ENDPOINT.lstrip('/')}"
+    )
+    request_headers = {
+        "accept": "application/json",
+        "OTP": zatca_otp,
+        "Accept-Version": settings.ZATCA_API_ACCEPT_VERSION,
+        "Content-Type": "application/json",
+    }
+    request_data = {"csr": encode_to_base64(csr)}
+
+    try:
+        response = requests.post(
+            url=csid_endpoint_url,
+            headers=request_headers,
+            json=request_data,
+            timeout=settings.ZATCA_API_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.HTTPError as exc:
+        try:
+            error_payload = exc.response.json()
+        except ValueError:
+            error_payload = {"raw_response": exc.response.text}
+        return {
+            "status_code": exc.response.status_code,
+            "error": error_payload,
+        }
+    except requests.RequestException as exc:
+        return {
+            "status_code": None,
+            "error": {"message": str(exc)},
+        }
+
+
 def register_device_in_zatca(device):
-    pass
+    csr_content = device.csr_content or generate_device_csr(device)
+    return request_compliance_csid(csr_content, device.otp)

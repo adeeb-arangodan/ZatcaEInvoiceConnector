@@ -119,3 +119,13 @@ USE_TZ = True
 STATIC_URL = 'static/'
 
 DEVICE_KEY_ENCRYPTION_KEY = os.environ.get("DEVICE_KEY_ENCRYPTION_KEY", "")
+ZATCA_SERVER_URL = os.environ.get(
+    "ZATCA_SERVER_URL",
+    "https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal",
+)
+ZATCA_COMPLIANCE_API_ENDPOINT = os.environ.get(
+    "ZATCA_COMPLIANCE_API_ENDPOINT",
+    "/compliance",
+)
+ZATCA_API_ACCEPT_VERSION = os.environ.get("ZATCA_API_ACCEPT_VERSION", "V2")
+ZATCA_API_TIMEOUT_SECONDS = int(os.environ.get("ZATCA_API_TIMEOUT_SECONDS", "30"))

@@ -1,6 +1,7 @@
 from django.contrib import admin
 
 from .models import Organization
+from .models import Device 
 
 
 @admin.register(Organization)
@@ -16,3 +17,6 @@ class OrganizationAdmin(admin.ModelAdmin):
     )
     search_fields = ("name", "branch_name", "vat_number", "cr_number")
     list_filter = ("invoice_category", "country_code", "industry_category")
+
+
+admin.site.register(Device)

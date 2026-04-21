@@ -128,4 +128,7 @@ Use that file for:
 - the `docs/guidelines-from-zatca` folder is the local source of truth for XML and security terminology used in implementation
 
 -Add environment variable DEVICE_KEY_ENCRYPTION_KEY
+-       from cryptography.fernet import Fernet
+-       print(Fernet.generate_key().decode())
 -Add environment variable openssl
+-Add environment variable ZATCA_SERVER_URL
