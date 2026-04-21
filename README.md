@@ -126,3 +126,6 @@ Use that file for:
 - device-level context is part of invoice submission
 - ZATCA technical onboarding artifacts are generated and managed by this application
 - the `docs/guidelines-from-zatca` folder is the local source of truth for XML and security terminology used in implementation
+
+-Add environment variable DEVICE_KEY_ENCRYPTION_KEY
+-Add environment variable openssl

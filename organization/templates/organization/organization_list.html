@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Organizations</title>
+</head>
+<body>
+    <h1>Organizations</h1>
+    <p><a href="{% url 'organization:create' %}">Add Organization</a></p>
+
+    {% if organizations %}
+        <table border="1" cellpadding="8" cellspacing="0">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Branch</th>
+                    <th>VAT Number</th>
+                    <th>CR Number</th>
+                    <th>Invoice Category</th>
+                    <th>City</th>
+                    <th>Devices</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for organization in organizations %}
+                    <tr>
+                        <td>{{ organization.name }}</td>
+                        <td>{{ organization.branch_name }}</td>
+                        <td>{{ organization.vat_number }}</td>
+                        <td>{{ organization.cr_number }}</td>
+                        <td>{{ organization.get_invoice_category_display }}</td>
+                        <td>{{ organization.city_name }}</td>
+                        <td>
+                            {% if organization.devices.all %}
+                                <ul>
+                                    {% for device in organization.devices.all %}
+                                        <li>
+                                            {{ device.asset_id }} ({{ device.egs_sw_serial_number }})
+                                            <a href="{% url 'organization:device-delete' device.pk %}">Delete</a>
+                                        </li>
+                                    {% empty %}
+                                        <li>No devices</li>
+                                    {% endfor %}
+                                </ul>
+                            {% endif %}
+                            <a href="{% url 'organization:device-create' organization.pk %}">Add Device</a>
+                        </td>
+                        <td>
+                            {% if organization.devices.exists %}
+                                <span>Edit unavailable after device creation</span>
+                            {% else %}
+                                <a href="{% url 'organization:update' organization.pk %}">Edit</a>
+                            {% endif %}
+                            <a href="{% url 'organization:delete' organization.pk %}">Delete</a>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>No organizations added yet.</p>
+    {% endif %}
+</body>
+</html>
