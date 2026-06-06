@@ -38,7 +38,9 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'rest_framework',
     'organization',
+    'invoices',
 ]
 
 MIDDLEWARE = [
@@ -129,3 +131,9 @@ ZATCA_COMPLIANCE_API_ENDPOINT = os.environ.get(
 )
 ZATCA_API_ACCEPT_VERSION = os.environ.get("ZATCA_API_ACCEPT_VERSION", "V2")
 ZATCA_API_TIMEOUT_SECONDS = int(os.environ.get("ZATCA_API_TIMEOUT_SECONDS", "30"))
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [],
+    'DEFAULT_PERMISSION_CLASSES': [],
+    'UNAUTHENTICATED_USER': None,
+}
