@@ -319,6 +319,7 @@ When making changes in this repository:
 - keep transformation, integration, and cryptographic concerns separated
 - consult `docs/guidelines-from-zatca` when implementing XML field mappings, signatures, hashes, QR payloads, or note-specific rules
 - update this file when product scope or workflow changes
+- Also consult https://zatca1.discourse.group/docs 
 
 ## Change Log
 
