@@ -29,6 +29,11 @@ class Organization(models.Model):
         choices=INVOICE_CATEGORY_CHOICES,
         default=INVOICE_CATEGORY_STANDARD_AND_SIMPLIFIED,
     )
+    is_active = models.BooleanField(
+        default=False,
+        verbose_name="Active",
+        help_text="Only active organizations can register devices.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -6,6 +6,13 @@
     <title>Organizations</title>
 </head>
 <body>
+    {% if messages %}
+        {% for message in messages %}
+            <p style="color: {% if message.tags == 'error' %}red{% else %}green{% endif %};">
+                {{ message }}
+            </p>
+        {% endfor %}
+    {% endif %}
     <h1>Organizations</h1>
     <p><a href="{% url 'organization:create' %}">Add Organization</a></p>
 
@@ -19,6 +26,7 @@
                     <th>CR Number</th>
                     <th>Invoice Category</th>
                     <th>City</th>
+                    <th>Status</th>
                     <th>Devices</th>
                     <th>Actions</th>
                 </tr>
@@ -33,6 +41,13 @@
                         <td>{{ organization.get_invoice_category_display }}</td>
                         <td>{{ organization.city_name }}</td>
                         <td>
+                            {% if organization.is_active %}
+                                <span style="color: green; font-weight: bold;">Active</span>
+                            {% else %}
+                                <span style="color: red;">Inactive</span>
+                            {% endif %}
+                        </td>
+                        <td>
                             {% if organization.devices.all %}
                                 <ul>
                                     {% for device in organization.devices.all %}
@@ -45,7 +60,11 @@
                                     {% endfor %}
                                 </ul>
                             {% endif %}
-                            <a href="{% url 'organization:device-create' organization.pk %}">Add Device</a>
+                            {% if organization.is_active %}
+                                <a href="{% url 'organization:device-create' organization.pk %}">Add Device</a>
+                            {% else %}
+                                <span style="color: #999;">Activate org to add devices</span>
+                            {% endif %}
                         </td>
                         <td>
                             {% if organization.devices.exists %}

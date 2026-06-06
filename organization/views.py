@@ -1,3 +1,4 @@
+from django.contrib import messages
 from django.http import HttpResponseRedirect
 from django.urls import reverse, reverse_lazy
 from django.views.generic import CreateView, DeleteView, ListView, UpdateView
@@ -76,6 +77,13 @@ class DeviceCreateView(CreateView):
 
     def dispatch(self, request, *args, **kwargs):
         self.organization = Organization.objects.get(pk=self.kwargs["organization_pk"])
+        if not self.organization.is_active:
+            messages.error(
+                request,
+                f'"{self.organization}" is not active. '
+                "An administrator must activate it before devices can be added.",
+            )
+            return HttpResponseRedirect(reverse("organization:list"))
         return super().dispatch(request, *args, **kwargs)
 
     def get_context_data(self, **kwargs):
