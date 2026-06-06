@@ -1,3 +1,5 @@
+import secrets
+
 from django.db import models
 
 
@@ -29,6 +31,7 @@ class Organization(models.Model):
         choices=INVOICE_CATEGORY_CHOICES,
         default=INVOICE_CATEGORY_STANDARD_AND_SIMPLIFIED,
     )
+    api_key = models.CharField(max_length=64, unique=True, blank=True, editable=False)
     is_active = models.BooleanField(
         default=False,
         verbose_name="Active",
@@ -39,6 +42,11 @@ class Organization(models.Model):
 
     class Meta:
         ordering = ["name", "branch_name"]
+
+    def save(self, *args, **kwargs):
+        if not self.api_key:
+            self.api_key = secrets.token_hex(32)
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.name} ({self.branch_name})"
