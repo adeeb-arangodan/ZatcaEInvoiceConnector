@@ -64,6 +64,8 @@ class Device(models.Model):
     csr_content = models.TextField(blank=True)
     csid_response = models.JSONField(null=True, blank=True)
     pcsid = models.JSONField(null=True, blank=True)
+    invoice_counter = models.IntegerField(default=0)
+    last_invoice_hash = models.CharField(max_length=512, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

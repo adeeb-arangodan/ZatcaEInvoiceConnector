@@ -4,7 +4,7 @@ from django.urls import reverse, reverse_lazy
 from django.views.generic import CreateView, DeleteView, ListView, UpdateView
 
 from .models import Device, Organization
-from .services import generate_device_csr, register_device_in_zatca
+from .services import acquire_pcsid_for_device, generate_device_csr, register_device_in_zatca
 
 
 class OrganizationListView(ListView):
@@ -97,6 +97,14 @@ class DeviceCreateView(CreateView):
         self.object.csr_content = generate_device_csr(self.object)
         self.object.csid_response = register_device_in_zatca(self.object)
         self.object.save(update_fields=["csr_content", "csid_response", "updated_at"])
+        try:
+            acquire_pcsid_for_device(self.object)
+        except Exception as exc:
+            messages.warning(
+                self.request,
+                f"Device registered but PCSID acquisition failed: {exc}. "
+                "Invoices will use compliance credentials until PCSID is available.",
+            )
         return response
 
     def get_success_url(self):
