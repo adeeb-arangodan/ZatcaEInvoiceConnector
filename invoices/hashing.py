@@ -18,18 +18,18 @@ def hash_invoice_xml(xml_bytes):
     return base64.b64encode(digest).decode('ascii')
 
 
-def get_icv_and_pih_atomically(device):
-    from organization.models import Device
+def get_icv_and_pih_atomically(organization):
+    from organization.models import Organization
 
     with transaction.atomic():
-        locked = Device.objects.select_for_update().get(pk=device.pk)
+        locked = Organization.objects.select_for_update().get(pk=organization.pk)
         locked.invoice_counter += 1
         locked.save(update_fields=['invoice_counter'])
         pih = locked.last_invoice_hash or INITIAL_PIH
         return locked.invoice_counter, pih
 
 
-def store_invoice_hash(device, invoice_hash):
-    from organization.models import Device
+def store_invoice_hash(organization, invoice_hash):
+    from organization.models import Organization
 
-    Device.objects.filter(pk=device.pk).update(last_invoice_hash=invoice_hash)
+    Organization.objects.filter(pk=organization.pk).update(last_invoice_hash=invoice_hash)

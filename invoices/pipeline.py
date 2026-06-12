@@ -14,7 +14,7 @@ _INVOICE_TYPE_MAP = {'388': 'invoice', '381': 'credit_note', '383': 'debit_note'
 
 
 def process_invoice_submission(organization, device, validated_data):
-    icv, pih = get_icv_and_pih_atomically(device)
+    icv, pih = get_icv_and_pih_atomically(organization)
     xml_bytes, invoice_uuid = build_invoice_xml(validated_data, organization, device, icv, pih)
     invoice_hash = hash_invoice_xml(xml_bytes)
     signed_xml_bytes, signature_b64, public_key_b64 = sign_invoice_xml(xml_bytes, device, invoice_hash)
@@ -49,7 +49,7 @@ def process_invoice_submission(organization, device, validated_data):
             submitted_at=timezone.now() if is_accepted else None,
         )
         if is_accepted:
-            store_invoice_hash(device, invoice_hash)
+            store_invoice_hash(organization, invoice_hash)
 
     return submission
 

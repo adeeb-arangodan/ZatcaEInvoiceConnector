@@ -6,6 +6,7 @@ from django.test import TestCase
 
 from organization.models import Device, Organization
 
+from .hashing import INITIAL_PIH, get_icv_and_pih_atomically, store_invoice_hash
 from .models import InvoiceSubmission
 
 SUBMIT_URL = '/api/invoices/submit/'
@@ -229,3 +230,61 @@ class OrganizationApiKeyTests(TestCase):
         org1 = self._make_org()
         org2 = self._make_org(vat_number='399999999900004', cr_number='9999999999')
         self.assertNotEqual(org1.api_key, org2.api_key)
+
+
+class InvoiceHashingTests(TestCase):
+
+    def _make_org(self, **overrides):
+        defaults = {**ORG_DEFAULTS}
+        defaults.update(overrides)
+        return Organization.objects.create(**defaults)
+
+    def test_first_call_returns_icv_one_and_initial_pih(self):
+        org = self._make_org()
+
+        icv, pih = get_icv_and_pih_atomically(org)
+
+        self.assertEqual(icv, 1)
+        self.assertEqual(pih, INITIAL_PIH)
+
+    def test_second_call_returns_icv_two_and_stored_hash(self):
+        org = self._make_org()
+
+        get_icv_and_pih_atomically(org)
+        store_invoice_hash(org, 'first-invoice-hash')
+        icv, pih = get_icv_and_pih_atomically(org)
+
+        self.assertEqual(icv, 2)
+        self.assertEqual(pih, 'first-invoice-hash')
+
+    def test_counter_is_shared_across_devices_in_same_organization(self):
+        org = self._make_org()
+        device_a = Device.objects.create(
+            organization=org,
+            asset_id='ASSET-A',
+            egs_sw_serial_number='SERIAL-A',
+            otp='111111',
+        )
+        device_b = Device.objects.create(
+            organization=org,
+            asset_id='ASSET-B',
+            egs_sw_serial_number='SERIAL-B',
+            otp='222222',
+        )
+
+        icv_a, pih_a = get_icv_and_pih_atomically(device_a.organization)
+        store_invoice_hash(device_a.organization, 'hash-from-device-a')
+        icv_b, pih_b = get_icv_and_pih_atomically(device_b.organization)
+
+        self.assertEqual(icv_a, 1)
+        self.assertEqual(pih_a, INITIAL_PIH)
+        self.assertEqual(icv_b, 2)
+        self.assertEqual(pih_b, 'hash-from-device-a')
+
+    def test_store_invoice_hash_persists_on_organization(self):
+        org = self._make_org()
+
+        store_invoice_hash(org, 'some-hash')
+        org.refresh_from_db()
+
+        self.assertEqual(org.last_invoice_hash, 'some-hash')
