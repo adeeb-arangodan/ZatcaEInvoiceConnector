@@ -8,7 +8,7 @@
 <body>
     {% if messages %}
         {% for message in messages %}
-            <p style="color: {% if message.tags == 'error' %}red{% else %}green{% endif %};">
+            <p style="color: {% if message.tags == 'error' %}red{% elif message.tags == 'warning' %}orange{% else %}green{% endif %};">
                 {{ message }}
             </p>
         {% endfor %}
