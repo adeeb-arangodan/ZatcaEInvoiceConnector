@@ -141,7 +141,7 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
     supplier_party = _sub(root, CAC, 'AccountingSupplierParty')
     supplier = _sub(supplier_party, CAC, 'Party')
     seller_id = _sub(supplier, CAC, 'PartyIdentification')
-    seller_id_val = _sub(seller_id, CBC, 'ID', organization.vat_number)
+    seller_id_val = _sub(seller_id, CBC, 'ID', organization.cr_number)
     seller_id_val.set('schemeID', 'CRN')
     seller_addr = _sub(supplier, CAC, 'PostalAddress')
     _sub(seller_addr, CBC, 'StreetName', organization.street_name)
@@ -164,7 +164,7 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
     if validated_data.get('customer_id_number'):
         cust_id = _sub(customer, CAC, 'PartyIdentification')
         cust_id_val = _sub(cust_id, CBC, 'ID', validated_data['customer_id_number'])
-        cust_id_val.set('schemeID', 'NAT')
+        cust_id_val.set('schemeID', validated_data.get('customer_id_type') or 'NAT')
     cust_addr = _sub(customer, CAC, 'PostalAddress')
     if validated_data.get('customer_street'):
         _sub(cust_addr, CBC, 'StreetName', validated_data['customer_street'])
@@ -217,7 +217,13 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         ac_tax_scheme = _sub(ac_tax, CAC, 'TaxScheme')
         _sub(ac_tax_scheme, CBC, 'ID', VAT_SCHEME)
 
-    # TaxTotal
+    # TaxTotal: ZATCA requires a tax-currency total without subtotals (since
+    # TaxCurrencyCode is declared) ahead of the document-currency total with
+    # the per-category subtotal breakdown — confirmed against the official
+    # sample invoice's structure.
+    tax_total_no_subtotal = _sub(root, CAC, 'TaxTotal')
+    _sub(tax_total_no_subtotal, CBC, 'TaxAmount', str(totals['vat_total']), currencyID='SAR')
+
     tax_total = _sub(root, CAC, 'TaxTotal')
     _sub(tax_total, CBC, 'TaxAmount', str(totals['vat_total']), currencyID='SAR')
 
@@ -268,6 +274,7 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         _sub(il, CBC, 'LineExtensionAmount', str(line_amount), currencyID='SAR')
         il_tax = _sub(il, CAC, 'TaxTotal')
         _sub(il_tax, CBC, 'TaxAmount', str(line_vat), currencyID='SAR')
+        _sub(il_tax, CBC, 'RoundingAmount', str(line_amount + line_vat), currencyID='SAR')
         il_item = _sub(il, CAC, 'Item')
         _sub(il_item, CBC, 'Name', item['name'])
         seller_item_id = _sub(il_item, CAC, 'SellersItemIdentification')
