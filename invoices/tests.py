@@ -2,12 +2,18 @@ import json
 import uuid
 from unittest.mock import MagicMock, patch
 
-from django.test import TestCase
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec as ec_module
+from django.test import TestCase, override_settings
 
-from organization.models import Device, Organization
+from organization.models import Device, DeviceKeyMaterial, Organization
+from organization.services import encrypt_private_key
 
 from .hashing import INITIAL_PIH, get_icv_and_pih_atomically, store_invoice_hash
 from .models import InvoiceSubmission
+from .pipeline import process_invoice_submission
+from .serializers import InvoiceSubmissionSerializer
 
 SUBMIT_URL = '/api/invoices/submit/'
 
@@ -52,7 +58,17 @@ ORG_DEFAULTS = dict(
 )
 
 FAKE_CSID = {
-    'binarySecurityToken': 'dGVzdHRva2Vu',
+    # ZATCA's binarySecurityToken is base64-of-DER, base64-encoded again for
+    # transport. This is a real (self-signed, secp256k1) test certificate so
+    # signing.py's x509 parsing succeeds the same way it would for a real CSID.
+    'binarySecurityToken': (
+        'TUlJQkJqQ0JycUFEQWdFQ0FnRUJNQW9HQ0NxR1NNNDlCQU1DTUE4eERUQUxCZ05WQkFNTUJGUkZVMVF3'
+        'SGhjTk1qUXdNVEF4TURBd01EQXdXaGNOTXpBd01UQXhNREF3TURBd1dqQVBNUTB3Q3dZRFZRUUREQVJV'
+        'UlZOVU1GWXdFQVlIS29aSXpqMENBUVlGSzRFRUFBb0RRZ0FFNEpZSUluT1BaQWQ3eDlKZnFHZVVnVjNN'
+        'Y2VDcTVQVW1HNndiL2Q0MkQ0MzZxSlRoRWMvQStZVFk5Z3E3OTJJWWI4QVczcWw3dkVuWllmaUZJVzFt'
+        'N2pBS0JnZ3Foa2pPUFFRREFnTkhBREJFQWlCYzI4eWJDK3JNWjlMV3RZZ01KUjBENk9yd3pTU2V4ZzlT'
+        'TnhPWEpOakN6QUlnVm1qZGk3MWxTYzdtV25CZHllZ0dzQTJWZW1ENWxRS0xFQkNaeStKdi81cz0='
+    ),
     'secret': 'testsecret',
     'requestID': 'REQ-001',
 }
@@ -288,3 +304,94 @@ class InvoiceHashingTests(TestCase):
         org.refresh_from_db()
 
         self.assertEqual(org.last_invoice_hash, 'some-hash')
+
+
+@override_settings(DEVICE_KEY_ENCRYPTION_KEY=Fernet.generate_key().decode())
+class InvoicePipelineTests(TestCase):
+    """Exercises process_invoice_submission() end-to-end (real XML build/hash/sign), mocking only submit_to_zatca."""
+
+    def _make_org_with_signing_device(self, **org_overrides):
+        defaults = {**ORG_DEFAULTS}
+        defaults.update(org_overrides)
+        org = Organization.objects.create(**defaults)
+        device = Device.objects.create(
+            organization=org,
+            asset_id='ASSET-100',
+            egs_sw_serial_number='SERIAL-200',
+            otp='123456',
+            csid_response=FAKE_CSID,
+        )
+        private_key = ec_module.generate_private_key(ec_module.SECP256R1())
+        pem = private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode('ascii')
+        DeviceKeyMaterial.objects.create(device=device, private_key_pem=encrypt_private_key(pem))
+        return org, device
+
+    def _validated(self, payload, org):
+        serializer = InvoiceSubmissionSerializer(data=payload, organization=org)
+        serializer.is_valid(raise_exception=True)
+        return serializer.validated_data, serializer.get_resolved_device()
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_chain_advances_even_when_zatca_rejects(self, mock_submit):
+        org, device = self._make_org_with_signing_device()
+        mock_submit.return_value = {'status_code': 422, 'error': {'message': 'invalid'}}
+        validated_data, resolved_device = self._validated(VALID_PAYLOAD, org)
+
+        submission = process_invoice_submission(org, resolved_device, validated_data)
+
+        org.refresh_from_db()
+        self.assertEqual(submission.status, InvoiceSubmission.STATUS_NOT_SUBMITTED)
+        self.assertEqual(submission.icv, 1)
+        self.assertTrue(submission.invoice_hash)
+        self.assertEqual(org.last_invoice_hash, submission.invoice_hash)
+        self.assertEqual(org.invoice_counter, 1)
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_chain_advances_on_zatca_acceptance(self, mock_submit):
+        org, device = self._make_org_with_signing_device()
+        mock_submit.return_value = {'status_code': 200}
+        validated_data, resolved_device = self._validated(VALID_PAYLOAD, org)
+
+        submission = process_invoice_submission(org, resolved_device, validated_data)
+
+        self.assertEqual(submission.status, InvoiceSubmission.STATUS_SUBMITTED)
+        self.assertIsNotNone(submission.submitted_at)
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_pih_is_committed_before_zatca_is_contacted(self, mock_submit):
+        """Regression test: the org row lock used to be released (and last_invoice_hash
+        stored) only *after* the ZATCA round-trip, so two concurrent submissions for the
+        same org could read the same stale PIH. The fix commits the local hash and
+        releases the lock before ZATCA is ever contacted."""
+        org, device = self._make_org_with_signing_device()
+        seen = {}
+
+        def fake_submit(*args, **kwargs):
+            seen['last_invoice_hash'] = Organization.objects.get(pk=org.pk).last_invoice_hash
+            return {'status_code': 200}
+
+        mock_submit.side_effect = fake_submit
+        validated_data, resolved_device = self._validated(VALID_PAYLOAD, org)
+
+        submission = process_invoice_submission(org, resolved_device, validated_data)
+
+        self.assertEqual(seen['last_invoice_hash'], submission.invoice_hash)
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_build_failure_rolls_back_icv_and_leaves_no_row(self, mock_submit):
+        org, device = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(VALID_PAYLOAD, org)
+
+        with patch('invoices.pipeline.build_invoice_xml', side_effect=ValueError('boom')):
+            with self.assertRaises(ValueError):
+                process_invoice_submission(org, resolved_device, validated_data)
+
+        org.refresh_from_db()
+        self.assertEqual(org.invoice_counter, 0)
+        self.assertEqual(org.last_invoice_hash, '')
+        self.assertEqual(InvoiceSubmission.objects.count(), 0)
+        mock_submit.assert_not_called()
