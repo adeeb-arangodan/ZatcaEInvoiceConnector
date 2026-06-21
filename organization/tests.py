@@ -164,6 +164,7 @@ class OrganizationCrudTests(TestCase):
             postal_zone="12632",
             cr_number="1010138184",
             invoice_category="1100",
+            is_active=True,
         )
 
         with patch("organization.services.shutil.which", return_value="openssl"), patch(
@@ -176,6 +177,9 @@ class OrganizationCrudTests(TestCase):
             side_effect=lambda value: value.removeprefix("encrypted::"),
         ), patch(
             "organization.views.register_device_in_zatca",
+            return_value=None,
+        ), patch(
+            "organization.views.acquire_pcsid_for_device",
             return_value=None,
         ):
             mock_read_text.side_effect = [

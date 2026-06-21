@@ -37,6 +37,8 @@ class Organization(models.Model):
         verbose_name="Active",
         help_text="Only active organizations can register devices.",
     )
+    invoice_counter = models.IntegerField(default=0)
+    last_invoice_hash = models.CharField(max_length=512, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

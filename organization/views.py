@@ -4,7 +4,17 @@ from django.urls import reverse, reverse_lazy
 from django.views.generic import CreateView, DeleteView, ListView, UpdateView
 
 from .models import Device, Organization
-from .services import generate_device_csr, register_device_in_zatca
+from .services import acquire_pcsid_for_device, generate_device_csr, register_device_in_zatca
+
+
+def _credential_acquired(result):
+    return bool(result) and "binarySecurityToken" in result
+
+
+def _credential_error_detail(result):
+    if not result:
+        return "no response was received from ZATCA."
+    return result.get("error", result)
 
 
 class OrganizationListView(ListView):
@@ -97,6 +107,36 @@ class DeviceCreateView(CreateView):
         self.object.csr_content = generate_device_csr(self.object)
         self.object.csid_response = register_device_in_zatca(self.object)
         self.object.save(update_fields=["csr_content", "csid_response", "updated_at"])
+
+        if not _credential_acquired(self.object.csid_response):
+            messages.error(
+                self.request,
+                "Failed to obtain CSID for this device: "
+                f"{_credential_error_detail(self.object.csid_response)}",
+            )
+            return response
+
+        messages.success(self.request, "CSID obtained for this device.")
+
+        try:
+            pcsid_result = acquire_pcsid_for_device(self.object)
+        except Exception as exc:
+            messages.error(
+                self.request,
+                f"Failed to obtain PCSID for this device: {exc}. "
+                "Invoices will use compliance credentials until PCSID is available.",
+            )
+            return response
+
+        if _credential_acquired(pcsid_result):
+            messages.success(self.request, "PCSID obtained for this device.")
+        else:
+            messages.error(
+                self.request,
+                "Failed to obtain PCSID for this device: "
+                f"{_credential_error_detail(pcsid_result)}. "
+                "Invoices will use compliance credentials until PCSID is available.",
+            )
         return response
 
     def get_success_url(self):

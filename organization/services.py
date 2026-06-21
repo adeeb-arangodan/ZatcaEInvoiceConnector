@@ -231,3 +231,97 @@ def request_compliance_csid(csr, zatca_otp):
 def register_device_in_zatca(device):
     csr_content = device.csr_content or generate_device_csr(device)
     return request_compliance_csid(csr_content, device.otp)
+
+
+def request_compliance_invoice_check(csid, invoice_hash, uuid, encoded_invoice):
+    requests = _get_requests_module()
+    url = (
+        f"{settings.ZATCA_SERVER_URL.rstrip('/')}"
+        f"/{settings.ZATCA_COMPLIANCE_INVOICE_CHECK_API_ENDPOINT.lstrip('/')}"
+    )
+    authorization_token = encode_to_base64(
+        f"{csid['binarySecurityToken']}:{csid['secret']}"
+    )
+    headers = {
+        'accept': 'application/json',
+        'Accept-Language': 'en',
+        'Accept-Version': settings.ZATCA_API_ACCEPT_VERSION,
+        'Content-Type': 'application/json',
+        'Authorization': f'Basic {authorization_token}',
+    }
+    body = {
+        'invoiceHash': invoice_hash,
+        'uuid': uuid,
+        'invoice': encoded_invoice,
+    }
+    try:
+        response = requests.post(
+            url=url, headers=headers, json=body, timeout=settings.ZATCA_API_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.HTTPError as exc:
+        try:
+            error_payload = exc.response.json()
+        except ValueError:
+            error_payload = {'raw_response': exc.response.text}
+        return {'status_code': exc.response.status_code, 'error': error_payload}
+    except requests.RequestException as exc:
+        return {'status_code': None, 'error': {'message': str(exc)}}
+
+
+def request_pcsid(csid):
+    requests = _get_requests_module()
+    url = (
+        f"{settings.ZATCA_SERVER_URL.rstrip('/')}"
+        f"/{settings.ZATCA_PRODUCTION_CSID_API_ENDPOINT.lstrip('/')}"
+    )
+    authorization_token = encode_to_base64(
+        f"{csid['binarySecurityToken']}:{csid['secret']}"
+    )
+    headers = {
+        'accept': 'application/json',
+        'Accept-Language': 'en',
+        'Accept-Version': settings.ZATCA_API_ACCEPT_VERSION,
+        'Content-Type': 'application/json',
+        'Authorization': f'Basic {authorization_token}',
+    }
+    body = {'compliance_request_id': csid['requestID']}
+    try:
+        response = requests.post(
+            url=url, headers=headers, json=body, timeout=settings.ZATCA_API_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.HTTPError as exc:
+        try:
+            error_payload = exc.response.json()
+        except ValueError:
+            error_payload = {'raw_response': exc.response.text}
+        return {'status_code': exc.response.status_code, 'error': error_payload}
+    except requests.RequestException as exc:
+        return {'status_code': None, 'error': {'message': str(exc)}}
+
+
+def acquire_pcsid_for_device(device):
+    from invoices.xml_builder import build_compliance_sample_invoice
+    from invoices.signing import sign_invoice_xml
+
+    csid = device.csid_response
+    if not csid or 'binarySecurityToken' not in csid:
+        raise ValueError("Device has no valid CSID. Cannot acquire PCSID.")
+
+    xml_bytes, sample_uuid, invoice_hash = build_compliance_sample_invoice(device)
+    signed_xml_bytes, _, _ = sign_invoice_xml(xml_bytes, device, invoice_hash)
+    encoded_invoice = encode_to_base64(signed_xml_bytes.decode('utf-8'))
+
+    request_compliance_invoice_check(
+        csid=csid,
+        invoice_hash=invoice_hash,
+        uuid=str(sample_uuid),
+        encoded_invoice=encoded_invoice,
+    )
+    pcsid_result = request_pcsid(csid)
+    device.pcsid = pcsid_result
+    device.save(update_fields=['pcsid', 'updated_at'])
+    return pcsid_result

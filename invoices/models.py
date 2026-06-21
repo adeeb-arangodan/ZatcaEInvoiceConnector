@@ -39,6 +39,12 @@ class InvoiceSubmission(models.Model):
     document_type = models.CharField(max_length=20, choices=DOCUMENT_TYPE_CHOICES)
     payload = models.JSONField(help_text="Raw request payload preserved as-is.")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_RECEIVED)
+    invoice_uuid = models.UUIDField(null=True, blank=True)
+    xml_document = models.TextField(blank=True)
+    invoice_hash = models.CharField(max_length=512, blank=True)
+    qr_code_data = models.TextField(blank=True)
+    zatca_response = models.JSONField(null=True, blank=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

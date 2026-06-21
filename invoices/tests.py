@@ -1,29 +1,37 @@
 import json
+import uuid
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
 from organization.models import Device, Organization
 
+from .hashing import INITIAL_PIH, get_icv_and_pih_atomically, store_invoice_hash
 from .models import InvoiceSubmission
 
 SUBMIT_URL = '/api/invoices/submit/'
 
 VALID_PAYLOAD = {
     'device_asset_id': 'ASSET-100',
-    'document_type': 'invoice',
     'invoice_number': 'INV-001',
-    'issue_date': '2026-06-06',
+    'issue_date': '2026-06-09',
     'issue_time': '10:00:00',
-    'line_items': [
+    'invoice_type_code': '388',
+    'invoice_type_code_name_attribute': '0100000',
+    'customer_name': 'Test Customer',
+    'customer_vat': '300000000000003',
+    'customer_city': 'Riyadh',
+    'customer_country_code': 'SA',
+    'items': [
         {
-            'description': 'Consultation',
-            'quantity': '1.0000',
-            'unit_price': '100.0000',
-            'tax_percent': '15.00',
+            'slno': 1,
+            'code': 'ITEM-001',
+            'name': 'Consultation',
+            'qty': '1.0000',
+            'price': '100.0000',
+            'vat_type': 'S',
         }
     ],
-    'tax_total': '15.00',
-    'payable_amount': '115.00',
 }
 
 ORG_DEFAULTS = dict(
@@ -43,6 +51,24 @@ ORG_DEFAULTS = dict(
     is_active=True,
 )
 
+FAKE_CSID = {
+    'binarySecurityToken': 'dGVzdHRva2Vu',
+    'secret': 'testsecret',
+    'requestID': 'REQ-001',
+}
+
+
+def _make_stub_submission(**kwargs):
+    stub = MagicMock(spec=InvoiceSubmission)
+    stub.pk = 1
+    stub.status = 'submitted'
+    stub.qr_code_data = 'AQID'
+    stub.invoice_uuid = uuid.uuid4()
+    stub.zatca_response = {'status_code': 200}
+    for k, v in kwargs.items():
+        setattr(stub, k, v)
+    return stub
+
 
 class InvoiceSubmitViewTests(TestCase):
 
@@ -55,6 +81,7 @@ class InvoiceSubmitViewTests(TestCase):
             asset_id='ASSET-100',
             egs_sw_serial_number='SERIAL-200',
             otp='123456',
+            csid_response=FAKE_CSID,
         )
         return org, device
 
@@ -72,14 +99,17 @@ class InvoiceSubmitViewTests(TestCase):
             **headers,
         )
 
-    def test_valid_invoice_returns_201(self):
+    @patch('invoices.views.process_invoice_submission')
+    def test_valid_invoice_returns_201(self, mock_pipeline):
         org, _ = self._make_org_with_device()
+        mock_pipeline.return_value = _make_stub_submission()
         response = self._post(VALID_PAYLOAD, org)
         self.assertEqual(response.status_code, 201)
         body = response.json()
         self.assertIn('id', body)
-        self.assertEqual(body['status'], 'received')
-        self.assertEqual(body['message'], 'Invoice received and queued for processing.')
+        self.assertIn('qr_code', body)
+        self.assertIn('invoice_uuid', body)
+        self.assertEqual(body['status'], 'submitted')
 
     def test_missing_api_key_returns_401(self):
         response = self.client.post(
@@ -126,40 +156,54 @@ class InvoiceSubmitViewTests(TestCase):
 
     def test_credit_note_without_billing_reference_returns_400(self):
         org, _ = self._make_org_with_device()
-        payload = {**VALID_PAYLOAD, 'document_type': 'credit_note'}
+        payload = {**VALID_PAYLOAD, 'invoice_type_code': '381', 'invoice_type_code_name_attribute': '0100000'}
         response = self._post(payload, org)
         self.assertEqual(response.status_code, 400)
         self.assertIn('billing_reference', response.json())
 
     def test_debit_note_without_billing_reference_returns_400(self):
         org, _ = self._make_org_with_device()
-        payload = {**VALID_PAYLOAD, 'document_type': 'debit_note'}
+        payload = {**VALID_PAYLOAD, 'invoice_type_code': '383', 'invoice_type_code_name_attribute': '0100000'}
         response = self._post(payload, org)
         self.assertEqual(response.status_code, 400)
         self.assertIn('billing_reference', response.json())
 
-    def test_empty_line_items_returns_400(self):
+    def test_empty_items_returns_400(self):
         org, _ = self._make_org_with_device()
-        payload = {**VALID_PAYLOAD, 'line_items': []}
+        payload = {**VALID_PAYLOAD, 'items': []}
         response = self._post(payload, org)
         self.assertEqual(response.status_code, 400)
-        self.assertIn('line_items', response.json())
+        self.assertIn('items', response.json())
 
-    def test_submission_creates_db_record(self):
+    @patch('invoices.views.process_invoice_submission')
+    def test_submission_calls_pipeline_with_correct_args(self, mock_pipeline):
         org, device = self._make_org_with_device()
+        mock_pipeline.return_value = _make_stub_submission()
         self._post(VALID_PAYLOAD, org)
-        self.assertEqual(InvoiceSubmission.objects.count(), 1)
-        submission = InvoiceSubmission.objects.get()
-        self.assertEqual(submission.organization, org)
-        self.assertEqual(submission.device, device)
-        self.assertEqual(submission.document_type, 'invoice')
-        self.assertEqual(submission.status, 'received')
+        self.assertTrue(mock_pipeline.called)
+        call_kwargs = mock_pipeline.call_args
+        self.assertEqual(call_kwargs.kwargs['organization'], org)
+        self.assertEqual(call_kwargs.kwargs['device'], device)
 
-    def test_credit_note_with_billing_reference_returns_201(self):
+    @patch('invoices.views.process_invoice_submission')
+    def test_credit_note_with_billing_reference_returns_201(self, mock_pipeline):
         org, _ = self._make_org_with_device()
-        payload = {**VALID_PAYLOAD, 'document_type': 'credit_note', 'billing_reference': 'INV-001'}
+        mock_pipeline.return_value = _make_stub_submission()
+        payload = {
+            **VALID_PAYLOAD,
+            'invoice_type_code': '381',
+            'invoice_type_code_name_attribute': '0100000',
+            'billing_reference': 'INV-001',
+        }
         response = self._post(payload, org)
         self.assertEqual(response.status_code, 201)
+
+    def test_device_without_csid_returns_422(self):
+        org, device = self._make_org_with_device()
+        device.csid_response = None
+        device.save()
+        response = self._post(VALID_PAYLOAD, org)
+        self.assertEqual(response.status_code, 422)
 
 
 class OrganizationApiKeyTests(TestCase):
@@ -186,3 +230,61 @@ class OrganizationApiKeyTests(TestCase):
         org1 = self._make_org()
         org2 = self._make_org(vat_number='399999999900004', cr_number='9999999999')
         self.assertNotEqual(org1.api_key, org2.api_key)
+
+
+class InvoiceHashingTests(TestCase):
+
+    def _make_org(self, **overrides):
+        defaults = {**ORG_DEFAULTS}
+        defaults.update(overrides)
+        return Organization.objects.create(**defaults)
+
+    def test_first_call_returns_icv_one_and_initial_pih(self):
+        org = self._make_org()
+
+        icv, pih = get_icv_and_pih_atomically(org)
+
+        self.assertEqual(icv, 1)
+        self.assertEqual(pih, INITIAL_PIH)
+
+    def test_second_call_returns_icv_two_and_stored_hash(self):
+        org = self._make_org()
+
+        get_icv_and_pih_atomically(org)
+        store_invoice_hash(org, 'first-invoice-hash')
+        icv, pih = get_icv_and_pih_atomically(org)
+
+        self.assertEqual(icv, 2)
+        self.assertEqual(pih, 'first-invoice-hash')
+
+    def test_counter_is_shared_across_devices_in_same_organization(self):
+        org = self._make_org()
+        device_a = Device.objects.create(
+            organization=org,
+            asset_id='ASSET-A',
+            egs_sw_serial_number='SERIAL-A',
+            otp='111111',
+        )
+        device_b = Device.objects.create(
+            organization=org,
+            asset_id='ASSET-B',
+            egs_sw_serial_number='SERIAL-B',
+            otp='222222',
+        )
+
+        icv_a, pih_a = get_icv_and_pih_atomically(device_a.organization)
+        store_invoice_hash(device_a.organization, 'hash-from-device-a')
+        icv_b, pih_b = get_icv_and_pih_atomically(device_b.organization)
+
+        self.assertEqual(icv_a, 1)
+        self.assertEqual(pih_a, INITIAL_PIH)
+        self.assertEqual(icv_b, 2)
+        self.assertEqual(pih_b, 'hash-from-device-a')
+
+    def test_store_invoice_hash_persists_on_organization(self):
+        org = self._make_org()
+
+        store_invoice_hash(org, 'some-hash')
+        org.refresh_from_db()
+
+        self.assertEqual(org.last_invoice_hash, 'some-hash')
