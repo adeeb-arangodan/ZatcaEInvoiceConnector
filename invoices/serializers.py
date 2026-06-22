@@ -73,3 +73,8 @@ class InvoiceSubmissionSerializer(serializers.Serializer):
 
     def get_resolved_device(self):
         return self._resolved_device
+
+
+class ReturnInvoiceSerializer(serializers.Serializer):
+    system_return_number = serializers.CharField(required=False, allow_blank=True, default='')
+    reason = serializers.CharField(required=False, allow_blank=True, default='')

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invoices - {{ organization.name }}</title>
+</head>
+<body>
+    {% if messages %}
+        {% for message in messages %}
+            <p style="color: {% if message.tags == 'error' %}red{% elif message.tags == 'warning' %}orange{% else %}green{% endif %};">
+                {{ message }}
+            </p>
+        {% endfor %}
+    {% endif %}
+
+    <p><a href="{% url 'organization:dashboard' organization.pk %}">Back to dashboard</a></p>
+
+    <h1>Invoices - {{ organization.name }}</h1>
+
+    {% if invoices %}
+        <table border="1" cellpadding="8" cellspacing="0">
+            <thead>
+                <tr>
+                    <th>Invoice Number</th>
+                    <th>Customer</th>
+                    <th>Issue Date</th>
+                    <th>Amount</th>
+                    <th>ICV</th>
+                    <th>ZATCA Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for invoice in invoices %}
+                    <tr>
+                        <td>{{ invoice.payload.invoice_number }}</td>
+                        <td>{{ invoice.payload.customer_name }}</td>
+                        <td>{{ invoice.payload.issue_date }}</td>
+                        <td>{{ invoice.total_amount|default:"-" }}</td>
+                        <td>{{ invoice.icv }}</td>
+                        <td>
+                            {% if invoice.status == 'submitted' %}
+                                <span style="color: green; font-weight: bold;">Submitted</span>
+                            {% else %}
+                                <span style="color: red;">{{ invoice.get_status_display }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if invoice.status == 'submitted' %}
+                                <a href="{% url 'organization:invoice-return' organization.pk invoice.pk %}">Return</a>
+                            {% else %}
+                                <span style="color: #999;">Not submitted</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>No invoices submitted yet.</p>
+    {% endif %}
+</body>
+</html>

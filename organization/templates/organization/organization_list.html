@@ -13,6 +13,8 @@
             </p>
         {% endfor %}
     {% endif %}
+    <p><a href="{% url 'logout' %}">Logout</a></p>
+
     <h1>Organizations</h1>
     <p><a href="{% url 'organization:create' %}">Add Organization</a></p>
 
@@ -67,6 +69,7 @@
                             {% endif %}
                         </td>
                         <td>
+                            <a href="{% url 'organization:dashboard' organization.pk %}">Dashboard</a>
                             {% if organization.devices.exists %}
                                 <span>Edit unavailable after device creation</span>
                             {% else %}

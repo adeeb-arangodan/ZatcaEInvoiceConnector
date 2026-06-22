@@ -1,8 +1,13 @@
 from django.contrib import messages
+from django.contrib.auth import login as auth_login
+from django.contrib.auth.mixins import LoginRequiredMixin
 from django.http import HttpResponseRedirect
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse, reverse_lazy
-from django.views.generic import CreateView, DeleteView, ListView, UpdateView
+from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
+from .forms import OrganizationSignupForm
+from .mixins import AdminRequiredMixin, OrgScopedMixin, is_admin
 from .models import Device, Organization
 from .services import acquire_pcsid_for_device, generate_device_csr, register_device_in_zatca
 
@@ -17,7 +22,18 @@ def _credential_error_detail(result):
     return result.get("error", result)
 
 
-class OrganizationListView(ListView):
+def landing(request):
+    if not request.user.is_authenticated:
+        return render(request, "organization/welcome.html")
+    if is_admin(request.user):
+        return redirect("organization:list")
+    organization = getattr(request.user, "organization", None)
+    if organization is None:
+        return render(request, "organization/welcome.html")
+    return redirect("organization:dashboard", pk=organization.pk)
+
+
+class OrganizationListView(AdminRequiredMixin, ListView):
     model = Organization
     context_object_name = "organizations"
     template_name = "organization/organization_list.html"
@@ -26,28 +42,27 @@ class OrganizationListView(ListView):
         return Organization.objects.prefetch_related("devices")
 
 
+class OrganizationDashboardView(LoginRequiredMixin, OrgScopedMixin, DetailView):
+    model = Organization
+    context_object_name = "organization"
+    template_name = "organization/organization_dashboard.html"
+
+
 class OrganizationCreateView(CreateView):
     model = Organization
-    fields = [
-        "name",
-        "branch_name",
-        "industry_category",
-        "vat_number",
-        "country_code",
-        "national_address_code",
-        "street_name",
-        "building_number",
-        "city_sub_division",
-        "city_name",
-        "postal_zone",
-        "cr_number",
-        "invoice_category",
-    ]
+    form_class = OrganizationSignupForm
     template_name = "organization/organization_form.html"
-    success_url = reverse_lazy("organization:list")
+
+    def form_valid(self, form):
+        response = super().form_valid(form)
+        auth_login(self.request, self.object.owner_user)
+        return response
+
+    def get_success_url(self):
+        return reverse("organization:dashboard", kwargs={"pk": self.object.pk})
 
 
-class OrganizationUpdateView(UpdateView):
+class OrganizationUpdateView(LoginRequiredMixin, OrgScopedMixin, UpdateView):
     model = Organization
     fields = [
         "name",
@@ -65,7 +80,6 @@ class OrganizationUpdateView(UpdateView):
         "invoice_category",
     ]
     template_name = "organization/organization_form.html"
-    success_url = reverse_lazy("organization:list")
 
     def dispatch(self, request, *args, **kwargs):
         self.object = self.get_object()
@@ -73,28 +87,50 @@ class OrganizationUpdateView(UpdateView):
             return HttpResponseRedirect(self.get_success_url())
         return super().dispatch(request, *args, **kwargs)
 
+    def get_success_url(self):
+        return reverse("organization:dashboard", kwargs={"pk": self.object.pk})
 
-class OrganizationDeleteView(DeleteView):
+
+class OrganizationDeleteView(AdminRequiredMixin, DeleteView):
     model = Organization
     template_name = "organization/organization_confirm_delete.html"
     success_url = reverse_lazy("organization:list")
 
 
-class DeviceCreateView(CreateView):
+class DeviceCreateView(LoginRequiredMixin, OrgScopedMixin, CreateView):
     model = Device
     fields = ["asset_id", "egs_sw_serial_number", "otp"]
     template_name = "organization/device_form.html"
 
-    def dispatch(self, request, *args, **kwargs):
-        self.organization = Organization.objects.get(pk=self.kwargs["organization_pk"])
+    def get_organization(self):
+        if not hasattr(self, "_org_scoped_organization"):
+            self._org_scoped_organization = get_object_or_404(
+                Organization, pk=self.kwargs["organization_pk"]
+            )
+        return self._org_scoped_organization
+
+    def get(self, request, *args, **kwargs):
+        blocked = self._block_if_inactive(request)
+        if blocked:
+            return blocked
+        return super().get(request, *args, **kwargs)
+
+    def post(self, request, *args, **kwargs):
+        blocked = self._block_if_inactive(request)
+        if blocked:
+            return blocked
+        return super().post(request, *args, **kwargs)
+
+    def _block_if_inactive(self, request):
+        self.organization = self.get_organization()
         if not self.organization.is_active:
             messages.error(
                 request,
                 f'"{self.organization}" is not active. '
                 "An administrator must activate it before devices can be added.",
             )
-            return HttpResponseRedirect(reverse("organization:list"))
-        return super().dispatch(request, *args, **kwargs)
+            return HttpResponseRedirect(reverse("organization:dashboard", kwargs={"pk": self.organization.pk}))
+        return None
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -140,10 +176,18 @@ class DeviceCreateView(CreateView):
         return response
 
     def get_success_url(self):
-        return reverse("organization:list")
+        return reverse("organization:dashboard", kwargs={"pk": self.organization.pk})
 
 
-class DeviceDeleteView(DeleteView):
+class DeviceDeleteView(LoginRequiredMixin, OrgScopedMixin, DeleteView):
     model = Device
     template_name = "organization/device_confirm_delete.html"
-    success_url = reverse_lazy("organization:list")
+
+    def get_organization(self):
+        if not hasattr(self, "_org_scoped_organization"):
+            device = get_object_or_404(Device, pk=self.kwargs["pk"])
+            self._org_scoped_organization = device.organization
+        return self._org_scoped_organization
+
+    def get_success_url(self):
+        return reverse("organization:dashboard", kwargs={"pk": self.get_organization().pk})
