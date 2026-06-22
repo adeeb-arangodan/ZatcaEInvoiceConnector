@@ -119,7 +119,7 @@ def ensure_device_keys(device):
                 openssl_binary,
                 "ecparam",
                 "-name",
-                "prime256v1",
+                "secp256k1",
                 "-genkey",
                 "-noout",
                 "-out",
@@ -312,7 +312,7 @@ def acquire_pcsid_for_device(device):
         raise ValueError("Device has no valid CSID. Cannot acquire PCSID.")
 
     xml_bytes, sample_uuid, invoice_hash = build_compliance_sample_invoice(device)
-    signed_xml_bytes, _, _ = sign_invoice_xml(xml_bytes, device, invoice_hash)
+    signed_xml_bytes, _, _, _ = sign_invoice_xml(xml_bytes, device, invoice_hash)
     encoded_invoice = encode_to_base64(signed_xml_bytes.decode('utf-8'))
 
     request_compliance_invoice_check(

@@ -132,11 +132,16 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
     qr_doc = _sub(qr_att, CBC, 'EmbeddedDocumentBinaryObject', '')
     qr_doc.set('mimeCode', 'text/plain')
 
+    # Signature (placeholder referenced by the XAdES signature embedded later)
+    signature = _sub(root, CAC, 'Signature')
+    _sub(signature, CBC, 'ID', 'urn:oasis:names:specification:ubl:signature:Invoice')
+    _sub(signature, CBC, 'SignatureMethod', 'urn:oasis:names:specification:ubl:dsig:enveloped:xades')
+
     # Seller party
     supplier_party = _sub(root, CAC, 'AccountingSupplierParty')
     supplier = _sub(supplier_party, CAC, 'Party')
     seller_id = _sub(supplier, CAC, 'PartyIdentification')
-    seller_id_val = _sub(seller_id, CBC, 'ID', organization.vat_number)
+    seller_id_val = _sub(seller_id, CBC, 'ID', organization.cr_number)
     seller_id_val.set('schemeID', 'CRN')
     seller_addr = _sub(supplier, CAC, 'PostalAddress')
     _sub(seller_addr, CBC, 'StreetName', organization.street_name)
@@ -159,12 +164,12 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
     if validated_data.get('customer_id_number'):
         cust_id = _sub(customer, CAC, 'PartyIdentification')
         cust_id_val = _sub(cust_id, CBC, 'ID', validated_data['customer_id_number'])
-        cust_id_val.set('schemeID', 'NAT')
+        cust_id_val.set('schemeID', validated_data.get('customer_id_type') or 'NAT')
     cust_addr = _sub(customer, CAC, 'PostalAddress')
-    if validated_data.get('customer_building_number'):
-        _sub(cust_addr, CBC, 'BuildingNumber', validated_data['customer_building_number'])
     if validated_data.get('customer_street'):
         _sub(cust_addr, CBC, 'StreetName', validated_data['customer_street'])
+    if validated_data.get('customer_building_number'):
+        _sub(cust_addr, CBC, 'BuildingNumber', validated_data['customer_building_number'])
     if validated_data.get('customer_district'):
         _sub(cust_addr, CBC, 'CitySubdivisionName', validated_data['customer_district'])
     if validated_data.get('customer_city'):
@@ -193,8 +198,8 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         ac = _sub(root, CAC, 'AllowanceCharge')
         _sub(ac, CBC, 'ChargeIndicator', 'false')
         _sub(ac, CBC, 'AllowanceChargeReason', 'Discount')
-        _sub(ac, CBC, 'Amount', str(disc_vat.quantize(Decimal('0.01'))))
-        _sub(ac, CBC, 'BaseAmount', str(totals['line_extension']))
+        _sub(ac, CBC, 'Amount', str(disc_vat.quantize(Decimal('0.01'))), currencyID='SAR')
+        _sub(ac, CBC, 'BaseAmount', str(totals['line_extension']), currencyID='SAR')
         ac_tax = _sub(ac, CAC, 'TaxCategory')
         _sub(ac_tax, CBC, 'ID', 'S')
         _sub(ac_tax, CBC, 'Percent', '15.00')
@@ -204,17 +209,23 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         ac = _sub(root, CAC, 'AllowanceCharge')
         _sub(ac, CBC, 'ChargeIndicator', 'false')
         _sub(ac, CBC, 'AllowanceChargeReason', 'Discount')
-        _sub(ac, CBC, 'Amount', str(disc_novat.quantize(Decimal('0.01'))))
-        _sub(ac, CBC, 'BaseAmount', str(totals['line_extension']))
+        _sub(ac, CBC, 'Amount', str(disc_novat.quantize(Decimal('0.01'))), currencyID='SAR')
+        _sub(ac, CBC, 'BaseAmount', str(totals['line_extension']), currencyID='SAR')
         ac_tax = _sub(ac, CAC, 'TaxCategory')
         _sub(ac_tax, CBC, 'ID', 'O')
         _sub(ac_tax, CBC, 'Percent', '0.00')
         ac_tax_scheme = _sub(ac_tax, CAC, 'TaxScheme')
         _sub(ac_tax_scheme, CBC, 'ID', VAT_SCHEME)
 
-    # TaxTotal
+    # TaxTotal: ZATCA requires a tax-currency total without subtotals (since
+    # TaxCurrencyCode is declared) ahead of the document-currency total with
+    # the per-category subtotal breakdown — confirmed against the official
+    # sample invoice's structure.
+    tax_total_no_subtotal = _sub(root, CAC, 'TaxTotal')
+    _sub(tax_total_no_subtotal, CBC, 'TaxAmount', str(totals['vat_total']), currencyID='SAR')
+
     tax_total = _sub(root, CAC, 'TaxTotal')
-    _sub(tax_total, CBC, 'TaxAmount', str(totals['vat_total']))
+    _sub(tax_total, CBC, 'TaxAmount', str(totals['vat_total']), currencyID='SAR')
 
     # Group by vat_type for TaxSubtotal
     vat_groups = {}
@@ -226,9 +237,9 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
 
     for vt, taxable_amount in vat_groups.items():
         subtotal = _sub(tax_total, CAC, 'TaxSubtotal')
-        _sub(subtotal, CBC, 'TaxableAmount', str(taxable_amount.quantize(Decimal('0.01'))))
+        _sub(subtotal, CBC, 'TaxableAmount', str(taxable_amount.quantize(Decimal('0.01'))), currencyID='SAR')
         vat_amount = (taxable_amount * VAT_RATE if vt == 'S' else Decimal('0')).quantize(Decimal('0.01'))
-        _sub(subtotal, CBC, 'TaxAmount', str(vat_amount))
+        _sub(subtotal, CBC, 'TaxAmount', str(vat_amount), currencyID='SAR')
         cat = _sub(subtotal, CAC, 'TaxCategory')
         _sub(cat, CBC, 'ID', _VAT_CATEGORY_ID[vt])
         _sub(cat, CBC, 'Percent', '15.00' if vt == 'S' else '0.00')
@@ -239,14 +250,14 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
 
     # LegalMonetaryTotal
     lmt = _sub(root, CAC, 'LegalMonetaryTotal')
-    _sub(lmt, CBC, 'LineExtensionAmount', str(totals['line_extension']))
-    _sub(lmt, CBC, 'TaxExclusiveAmount', str(totals['tax_exclusive']))
-    _sub(lmt, CBC, 'TaxInclusiveAmount', str(totals['tax_inclusive']))
+    _sub(lmt, CBC, 'LineExtensionAmount', str(totals['line_extension']), currencyID='SAR')
+    _sub(lmt, CBC, 'TaxExclusiveAmount', str(totals['tax_exclusive']), currencyID='SAR')
+    _sub(lmt, CBC, 'TaxInclusiveAmount', str(totals['tax_inclusive']), currencyID='SAR')
     if totals['discount_total'] > 0:
-        _sub(lmt, CBC, 'AllowanceTotalAmount', str(totals['discount_total']))
+        _sub(lmt, CBC, 'AllowanceTotalAmount', str(totals['discount_total']), currencyID='SAR')
     if totals['advance'] > 0:
-        _sub(lmt, CBC, 'PrepaidAmount', str(totals['advance']))
-    _sub(lmt, CBC, 'PayableAmount', str(totals['payable']))
+        _sub(lmt, CBC, 'PrepaidAmount', str(totals['advance']), currencyID='SAR')
+    _sub(lmt, CBC, 'PayableAmount', str(totals['payable']), currencyID='SAR')
 
     # Invoice Lines
     for idx, item in enumerate(items, start=1):
@@ -260,9 +271,10 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         _sub(il, CBC, 'ID', str(item['slno']))
         qty_el = _sub(il, CBC, 'InvoicedQuantity', str(qty.normalize()))
         qty_el.set('unitCode', 'PCE')
-        _sub(il, CBC, 'LineExtensionAmount', str(line_amount))
+        _sub(il, CBC, 'LineExtensionAmount', str(line_amount), currencyID='SAR')
         il_tax = _sub(il, CAC, 'TaxTotal')
-        _sub(il_tax, CBC, 'TaxAmount', str(line_vat))
+        _sub(il_tax, CBC, 'TaxAmount', str(line_vat), currencyID='SAR')
+        _sub(il_tax, CBC, 'RoundingAmount', str(line_amount + line_vat), currencyID='SAR')
         il_item = _sub(il, CAC, 'Item')
         _sub(il_item, CBC, 'Name', item['name'])
         seller_item_id = _sub(il_item, CAC, 'SellersItemIdentification')
@@ -273,7 +285,7 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         line_tax_scheme = _sub(classified_tax, CAC, 'TaxScheme')
         _sub(line_tax_scheme, CBC, 'ID', VAT_SCHEME)
         il_price = _sub(il, CAC, 'Price')
-        _sub(il_price, CBC, 'PriceAmount', str(price))
+        _sub(il_price, CBC, 'PriceAmount', str(price), currencyID='SAR')
 
     xml_bytes = etree.tostring(root, xml_declaration=True, encoding='UTF-8', pretty_print=False)
     return xml_bytes, invoice_uuid

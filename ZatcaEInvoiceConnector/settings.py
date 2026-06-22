@@ -120,6 +120,9 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+from dotenv import load_dotenv
+load_dotenv()
+
 DEVICE_KEY_ENCRYPTION_KEY = os.environ.get("DEVICE_KEY_ENCRYPTION_KEY", "")
 ZATCA_SERVER_URL = os.environ.get(
     "ZATCA_SERVER_URL",

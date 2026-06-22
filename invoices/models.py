@@ -17,13 +17,13 @@ class InvoiceSubmission(models.Model):
     STATUS_RECEIVED = 'received'
     STATUS_PROCESSING = 'processing'
     STATUS_SUBMITTED = 'submitted'
-    STATUS_REJECTED = 'rejected'
+    STATUS_NOT_SUBMITTED = 'not_submitted'
 
     STATUS_CHOICES = [
         (STATUS_RECEIVED, 'Received'),
         (STATUS_PROCESSING, 'Processing'),
         (STATUS_SUBMITTED, 'Submitted'),
-        (STATUS_REJECTED, 'Rejected'),
+        (STATUS_NOT_SUBMITTED, 'Not Submitted'),
     ]
 
     organization = models.ForeignKey(
@@ -39,6 +39,7 @@ class InvoiceSubmission(models.Model):
     document_type = models.CharField(max_length=20, choices=DOCUMENT_TYPE_CHOICES)
     payload = models.JSONField(help_text="Raw request payload preserved as-is.")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_RECEIVED)
+    icv = models.PositiveIntegerField(null=True, blank=True)
     invoice_uuid = models.UUIDField(null=True, blank=True)
     xml_document = models.TextField(blank=True)
     invoice_hash = models.CharField(max_length=512, blank=True)

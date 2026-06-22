@@ -31,6 +31,10 @@ class InvoiceSubmissionSerializer(serializers.Serializer):
     customer_postal_zone = serializers.CharField(required=False, allow_blank=True, default='')
     customer_country_code = serializers.CharField(required=False, allow_blank=True, default='SA')
     customer_id_number = serializers.CharField(required=False, allow_blank=True, default='')
+    customer_id_type = serializers.ChoiceField(
+        choices=['NAT', 'IQA', 'PAS', 'CRN', 'MOM', 'MLS', '700', 'SAG', 'GCC', 'OTH'],
+        required=False, allow_blank=True, default='NAT',
+    )
     payment_mode = serializers.CharField(required=False, allow_blank=True, default='')
     doc_level_discount_vat = serializers.DecimalField(
         required=False, default=0, max_digits=15, decimal_places=2)
