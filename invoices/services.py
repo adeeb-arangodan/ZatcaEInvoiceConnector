@@ -1,4 +1,4 @@
-from .models import CreditNote
+from .models import InvoiceSubmission
 from .pipeline import process_invoice_submission
 
 
@@ -27,9 +27,9 @@ def create_return_credit_note(organization, device, original_invoice, system_ret
         invoice_number_factory=lambda icv: f"CN-{icv}",
     )
 
-    # original_invoice/system_return_number are CreditNote-specific, so they
+    # original_invoice/system_return_number are credit-note-specific, so they
     # aren't threaded through the shared pipeline signature — set them here.
-    CreditNote.objects.filter(pk=credit_note.pk).update(
+    InvoiceSubmission.objects.filter(pk=credit_note.pk).update(
         original_invoice=original_invoice,
         system_return_number=system_return_number,
     )

@@ -11,7 +11,7 @@ from organization.models import Device, DeviceKeyMaterial, Organization
 from organization.services import encrypt_private_key
 
 from .hashing import INITIAL_PIH, get_icv_and_pih_atomically, store_invoice_hash
-from .models import CreditNote, DebitNote, Invoice
+from .models import InvoiceSubmission
 from .pipeline import process_invoice_submission
 from .serializers import InvoiceSubmissionSerializer
 from .services import create_return_credit_note
@@ -76,7 +76,7 @@ FAKE_CSID = {
 
 
 def _make_stub_submission(**kwargs):
-    stub = MagicMock(spec=Invoice)
+    stub = MagicMock(spec=InvoiceSubmission)
     stub.pk = 1
     stub.status = 'submitted'
     stub.qr_code_data = 'AQID'
@@ -345,7 +345,7 @@ class InvoicePipelineTests(TestCase):
         submission = process_invoice_submission(org, resolved_device, validated_data)
 
         org.refresh_from_db()
-        self.assertEqual(submission.status, Invoice.STATUS_NOT_SUBMITTED)
+        self.assertEqual(submission.status, InvoiceSubmission.STATUS_NOT_SUBMITTED)
         self.assertEqual(submission.icv, 1)
         self.assertTrue(submission.invoice_hash)
         self.assertEqual(org.last_invoice_hash, submission.invoice_hash)
@@ -359,7 +359,7 @@ class InvoicePipelineTests(TestCase):
 
         submission = process_invoice_submission(org, resolved_device, validated_data)
 
-        self.assertEqual(submission.status, Invoice.STATUS_SUBMITTED)
+        self.assertEqual(submission.status, InvoiceSubmission.STATUS_SUBMITTED)
         self.assertIsNotNone(submission.submitted_at)
 
     @patch('invoices.pipeline.submit_to_zatca')
@@ -394,13 +394,13 @@ class InvoicePipelineTests(TestCase):
         org.refresh_from_db()
         self.assertEqual(org.invoice_counter, 0)
         self.assertEqual(org.last_invoice_hash, '')
-        self.assertEqual(Invoice.objects.count(), 0)
+        self.assertEqual(InvoiceSubmission.objects.count(), 0)
         mock_submit.assert_not_called()
 
 
 @override_settings(DEVICE_KEY_ENCRYPTION_KEY=Fernet.generate_key().decode())
 class DocumentRoutingTests(TestCase):
-    """Confirms invoice_type_code routes persistence to the correct table."""
+    """Confirms invoice_type_code sets the correct document_type on the shared table."""
 
     def _make_org_with_signing_device(self, **org_overrides):
         defaults = {**ORG_DEFAULTS}
@@ -428,20 +428,18 @@ class DocumentRoutingTests(TestCase):
         return serializer.validated_data, serializer.get_resolved_device()
 
     @patch('invoices.pipeline.submit_to_zatca')
-    def test_invoice_type_code_388_persists_to_invoice_table(self, mock_submit):
+    def test_invoice_type_code_388_sets_document_type_invoice(self, mock_submit):
         mock_submit.return_value = {'status_code': 200}
         org, device = self._make_org_with_signing_device()
         validated_data, resolved_device = self._validated(VALID_PAYLOAD, org)
 
         submission = process_invoice_submission(org, resolved_device, validated_data)
 
-        self.assertIsInstance(submission, Invoice)
-        self.assertEqual(Invoice.objects.count(), 1)
-        self.assertEqual(CreditNote.objects.count(), 0)
-        self.assertEqual(DebitNote.objects.count(), 0)
+        self.assertEqual(submission.document_type, InvoiceSubmission.DOCUMENT_TYPE_INVOICE)
+        self.assertEqual(InvoiceSubmission.objects.count(), 1)
 
     @patch('invoices.pipeline.submit_to_zatca')
-    def test_invoice_type_code_381_persists_to_credit_note_table(self, mock_submit):
+    def test_invoice_type_code_381_sets_document_type_credit_note(self, mock_submit):
         mock_submit.return_value = {'status_code': 200}
         org, device = self._make_org_with_signing_device()
         payload = {**VALID_PAYLOAD, 'invoice_type_code': '381', 'billing_reference': 'INV-001'}
@@ -449,12 +447,11 @@ class DocumentRoutingTests(TestCase):
 
         submission = process_invoice_submission(org, resolved_device, validated_data)
 
-        self.assertIsInstance(submission, CreditNote)
-        self.assertEqual(CreditNote.objects.count(), 1)
-        self.assertEqual(Invoice.objects.count(), 0)
+        self.assertEqual(submission.document_type, InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE)
+        self.assertEqual(InvoiceSubmission.objects.count(), 1)
 
     @patch('invoices.pipeline.submit_to_zatca')
-    def test_invoice_type_code_383_persists_to_debit_note_table(self, mock_submit):
+    def test_invoice_type_code_383_sets_document_type_debit_note(self, mock_submit):
         mock_submit.return_value = {'status_code': 200}
         org, device = self._make_org_with_signing_device()
         payload = {**VALID_PAYLOAD, 'invoice_type_code': '383', 'billing_reference': 'INV-001'}
@@ -462,9 +459,8 @@ class DocumentRoutingTests(TestCase):
 
         submission = process_invoice_submission(org, resolved_device, validated_data)
 
-        self.assertIsInstance(submission, DebitNote)
-        self.assertEqual(DebitNote.objects.count(), 1)
-        self.assertEqual(Invoice.objects.count(), 0)
+        self.assertEqual(submission.document_type, InvoiceSubmission.DOCUMENT_TYPE_DEBIT_NOTE)
+        self.assertEqual(InvoiceSubmission.objects.count(), 1)
 
 
 @override_settings(DEVICE_KEY_ENCRYPTION_KEY=Fernet.generate_key().decode())
@@ -512,11 +508,12 @@ class ReturnInvoiceFlowTests(TestCase):
         )
 
         self.assertEqual(credit_note.icv, 2)
+        self.assertEqual(credit_note.document_type, InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE)
         self.assertEqual(credit_note.original_invoice_id, invoice.pk)
         self.assertEqual(credit_note.system_return_number, 'SYS-99')
         self.assertEqual(credit_note.payload['invoice_number'], f'CN-{credit_note.icv}')
         self.assertEqual(credit_note.payload['billing_reference'], invoice.payload['invoice_number'])
-        self.assertEqual(credit_note.status, CreditNote.STATUS_SUBMITTED)
+        self.assertEqual(credit_note.status, InvoiceSubmission.STATUS_SUBMITTED)
 
     @patch('invoices.pipeline.submit_to_zatca')
     def test_return_via_api_creates_credit_note(self, mock_submit):
@@ -533,8 +530,10 @@ class ReturnInvoiceFlowTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(CreditNote.objects.count(), 1)
-        credit_note = CreditNote.objects.get()
+        self.assertEqual(
+            InvoiceSubmission.objects.filter(document_type=InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE).count(), 1,
+        )
+        credit_note = InvoiceSubmission.objects.get(document_type=InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE)
         self.assertEqual(credit_note.original_invoice_id, invoice.pk)
         self.assertEqual(credit_note.system_return_number, 'SYS-1')
 
@@ -561,4 +560,6 @@ class ReturnInvoiceFlowTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(CreditNote.objects.count(), 0)
+        self.assertEqual(
+            InvoiceSubmission.objects.filter(document_type=InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE).count(), 0,
+        )

@@ -4,19 +4,17 @@ from django.utils import timezone
 from organization.services import encode_to_base64
 
 from .hashing import get_icv_and_pih_atomically, hash_invoice_xml, store_invoice_hash
-from .models import CreditNote, DebitNote, Invoice
+from .models import InvoiceSubmission
 from .qr import generate_qr_tlv
 from .signing import sign_invoice_xml
 from .submission import submit_to_zatca
 from .xml_builder import build_invoice_xml, embed_qr_in_xml
 
 _INVOICE_TYPE_MAP = {'388': 'invoice', '381': 'credit_note', '383': 'debit_note'}
-_MODEL_MAP = {'invoice': Invoice, 'credit_note': CreditNote, 'debit_note': DebitNote}
 
 
 def process_invoice_submission(organization, device, validated_data, invoice_number_factory=None):
     document_type = _INVOICE_TYPE_MAP.get(validated_data['invoice_type_code'], 'invoice')
-    Model = _MODEL_MAP[document_type]
 
     with transaction.atomic():
         icv, pih = get_icv_and_pih_atomically(organization)
@@ -24,11 +22,12 @@ def process_invoice_submission(organization, device, validated_data, invoice_num
         if invoice_number_factory is not None:
             validated_data['invoice_number'] = invoice_number_factory(icv)
 
-        submission = Model.objects.create(
+        submission = InvoiceSubmission.objects.create(
             organization=organization,
             device=device,
+            document_type=document_type,
             payload=_serializable_data(validated_data),
-            status=Model.STATUS_PROCESSING,
+            status=InvoiceSubmission.STATUS_PROCESSING,
             icv=icv,
         )
 
@@ -51,7 +50,7 @@ def process_invoice_submission(organization, device, validated_data, invoice_num
         submission.xml_document = final_xml_bytes.decode('utf-8')
         submission.invoice_hash = invoice_hash
         submission.qr_code_data = qr_code_data
-        submission.status = Model.STATUS_NOT_SUBMITTED
+        submission.status = InvoiceSubmission.STATUS_NOT_SUBMITTED
         submission.save(update_fields=[
             'invoice_uuid', 'xml_document', 'invoice_hash', 'qr_code_data', 'status',
         ])
@@ -68,7 +67,7 @@ def process_invoice_submission(organization, device, validated_data, invoice_num
     is_accepted = zatca_response.get('status_code') not in (None, 400, 401, 422)
 
     submission.zatca_response = zatca_response
-    submission.status = Model.STATUS_SUBMITTED if is_accepted else Model.STATUS_NOT_SUBMITTED
+    submission.status = InvoiceSubmission.STATUS_SUBMITTED if is_accepted else InvoiceSubmission.STATUS_NOT_SUBMITTED
     submission.submitted_at = timezone.now() if is_accepted else None
     submission.save(update_fields=['zatca_response', 'status', 'submitted_at'])
 

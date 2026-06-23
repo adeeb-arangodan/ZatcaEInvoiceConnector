@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .authentication import OrganizationApiKeyAuthentication
-from .models import Invoice
+from .models import InvoiceSubmission
 from .permissions import IsActiveOrganization
 from .pipeline import process_invoice_submission
 from .serializers import InvoiceSubmissionSerializer, ReturnInvoiceSerializer
@@ -56,7 +56,10 @@ class InvoiceReturnView(APIView):
     permission_classes = [IsActiveOrganization]
 
     def post(self, request, pk):
-        original_invoice = get_object_or_404(Invoice, pk=pk, organization=request.user)
+        original_invoice = get_object_or_404(
+            InvoiceSubmission, pk=pk, organization=request.user,
+            document_type=InvoiceSubmission.DOCUMENT_TYPE_INVOICE,
+        )
 
         serializer = ReturnInvoiceSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)

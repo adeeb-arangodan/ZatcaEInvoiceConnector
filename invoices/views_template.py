@@ -6,7 +6,7 @@ from django.views.generic import FormView, ListView
 
 from organization.mixins import OrgScopedMixin
 
-from .models import Invoice
+from .models import InvoiceSubmission
 from .services import create_return_credit_note
 from .xml_builder import _compute_totals
 
@@ -17,10 +17,10 @@ class InvoiceListView(LoginRequiredMixin, OrgScopedMixin, ListView):
 
     def get_queryset(self):
         self.organization = self.get_organization()
-        invoices = list(self.organization.invoices.select_related("device"))
-        for invoice in invoices:
-            invoice.total_amount = _invoice_total(invoice)
-        return invoices
+        submissions = list(self.organization.invoice_submissions.select_related("device"))
+        for submission in submissions:
+            _attach_totals(submission)
+        return submissions
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -28,17 +28,26 @@ class InvoiceListView(LoginRequiredMixin, OrgScopedMixin, ListView):
         return context
 
 
-def _invoice_total(invoice):
-    items = invoice.payload.get("items", [])
+def _attach_totals(submission):
+    items = submission.payload.get("items", [])
     if not items:
-        return None
+        submission.total_amount = None
+        submission.discount_amount = None
+        submission.net_before_tax = None
+        submission.tax_amount = None
+        submission.net_with_tax = None
+        return
     totals = _compute_totals(
         items,
-        invoice.payload.get("doc_level_discount_vat", 0),
-        invoice.payload.get("doc_level_discount_novat", 0),
-        invoice.payload.get("advance_paid", 0),
+        submission.payload.get("doc_level_discount_vat", 0),
+        submission.payload.get("doc_level_discount_novat", 0),
+        submission.payload.get("advance_paid", 0),
     )
-    return totals["payable"]
+    submission.total_amount = totals["line_extension"]
+    submission.discount_amount = totals["discount_total"]
+    submission.net_before_tax = totals["tax_exclusive"]
+    submission.tax_amount = totals["vat_total"]
+    submission.net_with_tax = totals["tax_inclusive"]
 
 
 class ReturnInvoiceForm(forms.Form):
@@ -52,7 +61,10 @@ class ReturnInvoiceFormView(LoginRequiredMixin, OrgScopedMixin, FormView):
 
     def dispatch(self, request, *args, **kwargs):
         self.invoice = get_object_or_404(
-            Invoice, pk=self.kwargs["invoice_pk"], organization_id=self.kwargs["pk"]
+            InvoiceSubmission,
+            pk=self.kwargs["invoice_pk"],
+            organization_id=self.kwargs["pk"],
+            document_type=InvoiceSubmission.DOCUMENT_TYPE_INVOICE,
         )
         return super().dispatch(request, *args, **kwargs)
 

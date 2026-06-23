@@ -22,10 +22,15 @@
         <table border="1" cellpadding="8" cellspacing="0">
             <thead>
                 <tr>
+                    <th>Type</th>
                     <th>Invoice Number</th>
                     <th>Customer</th>
                     <th>Issue Date</th>
-                    <th>Amount</th>
+                    <th>Total</th>
+                    <th>Discount</th>
+                    <th>Net before Tax</th>
+                    <th>Tax</th>
+                    <th>Net with Tax</th>
                     <th>ICV</th>
                     <th>ZATCA Status</th>
                     <th>Actions</th>
@@ -34,10 +39,15 @@
             <tbody>
                 {% for invoice in invoices %}
                     <tr>
+                        <td>{{ invoice.get_document_type_display }}</td>
                         <td>{{ invoice.payload.invoice_number }}</td>
                         <td>{{ invoice.payload.customer_name }}</td>
                         <td>{{ invoice.payload.issue_date }}</td>
                         <td>{{ invoice.total_amount|default:"-" }}</td>
+                        <td>{{ invoice.discount_amount|default:"-" }}</td>
+                        <td>{{ invoice.net_before_tax|default:"-" }}</td>
+                        <td>{{ invoice.tax_amount|default:"-" }}</td>
+                        <td>{{ invoice.net_with_tax|default:"-" }}</td>
                         <td>{{ invoice.icv }}</td>
                         <td>
                             {% if invoice.status == 'submitted' %}
@@ -47,8 +57,10 @@
                             {% endif %}
                         </td>
                         <td>
-                            {% if invoice.status == 'submitted' %}
+                            {% if invoice.document_type == 'invoice' and invoice.status == 'submitted' %}
                                 <a href="{% url 'organization:invoice-return' organization.pk invoice.pk %}">Return</a>
+                            {% elif invoice.document_type != 'invoice' %}
+                                <span style="color: #999;">&mdash;</span>
                             {% else %}
                                 <span style="color: #999;">Not submitted</span>
                             {% endif %}
