@@ -1,5 +1,6 @@
 import secrets
 
+from django.conf import settings
 from django.db import models
 
 
@@ -15,6 +16,14 @@ class Organization(models.Model):
     ]
 
     name = models.CharField(max_length=255)
+    email = models.EmailField(null=True, blank=True, unique=True)
+    owner_user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="organization",
+    )
     branch_name = models.CharField(max_length=255)
     industry_category = models.CharField(max_length=100)
     vat_number = models.CharField(max_length=15, unique=True)

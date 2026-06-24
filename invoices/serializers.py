@@ -43,6 +43,7 @@ class InvoiceSubmissionSerializer(serializers.Serializer):
     advance_paid = serializers.DecimalField(
         required=False, default=0, max_digits=15, decimal_places=2)
     billing_reference = serializers.CharField(required=False, allow_blank=True, default='')
+    reason = serializers.CharField(required=False, allow_blank=True, default='')
     items = serializers.ListField(child=ItemSerializer(), min_length=1)
 
     def __init__(self, *args, **kwargs):
@@ -69,7 +70,17 @@ class InvoiceSubmissionSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 {'billing_reference': 'This field is required for credit notes (381) and debit notes (383).'}
             )
+        if invoice_type_code in BILLING_REFERENCE_REQUIRED_CODES and not data.get('reason'):
+            raise serializers.ValidationError(
+                {'reason': 'This field is required for credit notes (381) and debit notes (383) — '
+                           'ZATCA (BR-KSA-17) requires the reason for issuance.'}
+            )
         return data
 
     def get_resolved_device(self):
         return self._resolved_device
+
+
+class ReturnInvoiceSerializer(serializers.Serializer):
+    system_return_number = serializers.CharField(required=False, allow_blank=True, default='')
+    reason = serializers.CharField(required=False, allow_blank=True, default='')

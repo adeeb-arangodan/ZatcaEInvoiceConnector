@@ -1,3 +1,4 @@
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 from unittest.mock import patch
@@ -13,13 +14,45 @@ from .services import (
     request_compliance_csid,
 )
 
+User = get_user_model()
+
+
+def _make_owned_organization(email="owner@example.com", **overrides):
+    defaults = dict(
+        name="Safa Makkah Polyclinic Company",
+        branch_name="Branch-2",
+        industry_category="Healthcare",
+        vat_number="399999999900003",
+        country_code="SA",
+        national_address_code="RCFA3435",
+        street_name="Al Baraqiyah",
+        building_number="3435",
+        city_sub_division="Al Futah Dist",
+        city_name="Riyadh",
+        postal_zone="12632",
+        cr_number="1010138184",
+        invoice_category="1100",
+    )
+    defaults.update(overrides)
+    user = User.objects.create_user(username=email, email=email, password="testpass123")
+    organization = Organization.objects.create(email=email, owner_user=user, **defaults)
+    return organization, user
+
 
 class OrganizationCrudTests(TestCase):
+    # django-simple-captcha snapshots CAPTCHA_TEST_MODE at import time, so
+    # override_settings has no effect — patch the module attribute directly.
+    @patch("captcha.fields.settings.CAPTCHA_TEST_MODE", True)
     def test_create_organization(self):
         response = self.client.post(
             reverse("organization:create"),
             {
                 "name": "Safa Makkah Polyclinic Company",
+                "email": "newowner@example.com",
+                "password": "S0meStrongPass!23",
+                "password_confirm": "S0meStrongPass!23",
+                "captcha_0": "dummy",
+                "captcha_1": "PASSED",
                 "branch_name": "Branch-2",
                 "industry_category": "Healthcare",
                 "vat_number": "399999999900003",
@@ -35,25 +68,15 @@ class OrganizationCrudTests(TestCase):
             },
         )
 
-        self.assertRedirects(response, reverse("organization:list"))
         self.assertEqual(Organization.objects.count(), 1)
+        organization = Organization.objects.get()
+        self.assertRedirects(response, reverse("organization:dashboard", args=[organization.pk]))
+        self.assertEqual(organization.email, "newowner@example.com")
+        self.assertIsNotNone(organization.owner_user)
 
     def test_update_organization(self):
-        organization = Organization.objects.create(
-            name="Safa Makkah Polyclinic Company",
-            branch_name="Branch-2",
-            industry_category="Healthcare",
-            vat_number="399999999900003",
-            country_code="SA",
-            national_address_code="RCFA3435",
-            street_name="Al Baraqiyah",
-            building_number="3435",
-            city_sub_division="Al Futah Dist",
-            city_name="Riyadh",
-            postal_zone="12632",
-            cr_number="1010138184",
-            invoice_category="1100",
-        )
+        organization, user = _make_owned_organization()
+        self.client.force_login(user)
 
         response = self.client.post(
             reverse("organization:update", args=[organization.pk]),
@@ -74,28 +97,27 @@ class OrganizationCrudTests(TestCase):
             },
         )
 
-        self.assertRedirects(response, reverse("organization:list"))
+        self.assertRedirects(response, reverse("organization:dashboard", args=[organization.pk]))
         organization.refresh_from_db()
         self.assertEqual(organization.branch_name, "Branch-3")
         self.assertEqual(organization.city_name, "Jeddah")
         self.assertEqual(organization.invoice_category, "1000")
 
-    def test_cannot_update_organization_with_devices(self):
-        organization = Organization.objects.create(
-            name="Safa Makkah Polyclinic Company",
-            branch_name="Branch-2",
-            industry_category="Healthcare",
-            vat_number="399999999900003",
-            country_code="SA",
-            national_address_code="RCFA3435",
-            street_name="Al Baraqiyah",
-            building_number="3435",
-            city_sub_division="Al Futah Dist",
-            city_name="Riyadh",
-            postal_zone="12632",
-            cr_number="1010138184",
-            invoice_category="1100",
+    def test_update_organization_rejects_other_owner(self):
+        organization, _owner = _make_owned_organization()
+        _other_org, other_user = _make_owned_organization(email="other@example.com", vat_number="399999999900004", cr_number="9999999999")
+        self.client.force_login(other_user)
+
+        response = self.client.post(
+            reverse("organization:update", args=[organization.pk]),
+            {"name": "Hijacked"},
         )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_cannot_update_organization_with_devices(self):
+        organization, user = _make_owned_organization()
+        self.client.force_login(user)
         Device.objects.create(
             organization=organization,
             asset_id="ASSET-100",
@@ -122,7 +144,7 @@ class OrganizationCrudTests(TestCase):
             },
         )
 
-        self.assertRedirects(response, reverse("organization:list"))
+        self.assertRedirects(response, reverse("organization:dashboard", args=[organization.pk]))
         organization.refresh_from_db()
         self.assertEqual(organization.name, "Safa Makkah Polyclinic Company")
         self.assertEqual(organization.branch_name, "Branch-2")
@@ -143,6 +165,8 @@ class OrganizationCrudTests(TestCase):
             cr_number="1010138184",
             invoice_category="1100",
         )
+        admin = User.objects.create_user(username="admin@example.com", is_staff=True)
+        self.client.force_login(admin)
 
         response = self.client.post(reverse("organization:delete", args=[organization.pk]))
 
@@ -150,22 +174,8 @@ class OrganizationCrudTests(TestCase):
         self.assertFalse(Organization.objects.filter(pk=organization.pk).exists())
 
     def test_create_device_for_organization(self):
-        organization = Organization.objects.create(
-            name="Safa Makkah Polyclinic Company",
-            branch_name="Branch-2",
-            industry_category="Healthcare",
-            vat_number="399999999900003",
-            country_code="SA",
-            national_address_code="RCFA3435",
-            street_name="Al Baraqiyah",
-            building_number="3435",
-            city_sub_division="Al Futah Dist",
-            city_name="Riyadh",
-            postal_zone="12632",
-            cr_number="1010138184",
-            invoice_category="1100",
-            is_active=True,
-        )
+        organization, user = _make_owned_organization(is_active=True)
+        self.client.force_login(user)
 
         with patch("organization.services.shutil.which", return_value="openssl"), patch(
             "organization.services.subprocess.run"
@@ -196,7 +206,7 @@ class OrganizationCrudTests(TestCase):
                 },
             )
 
-        self.assertRedirects(response, reverse("organization:list"))
+        self.assertRedirects(response, reverse("organization:dashboard", args=[organization.pk]))
         device = Device.objects.get(organization=organization, asset_id="ASSET-100")
         self.assertEqual(device.egs_sw_serial_number, "SERIAL-200")
         self.assertEqual(device.otp, "123456")
@@ -211,21 +221,8 @@ class OrganizationCrudTests(TestCase):
         self.assertEqual(device.key_material.public_key_pem, "-----BEGIN PUBLIC KEY-----\nPUBLIC\n-----END PUBLIC KEY-----\n")
 
     def test_delete_device(self):
-        organization = Organization.objects.create(
-            name="Safa Makkah Polyclinic Company",
-            branch_name="Branch-2",
-            industry_category="Healthcare",
-            vat_number="399999999900003",
-            country_code="SA",
-            national_address_code="RCFA3435",
-            street_name="Al Baraqiyah",
-            building_number="3435",
-            city_sub_division="Al Futah Dist",
-            city_name="Riyadh",
-            postal_zone="12632",
-            cr_number="1010138184",
-            invoice_category="1100",
-        )
+        organization, user = _make_owned_organization()
+        self.client.force_login(user)
         device = Device.objects.create(
             organization=organization,
             asset_id="ASSET-100",
@@ -235,7 +232,7 @@ class OrganizationCrudTests(TestCase):
 
         response = self.client.post(reverse("organization:device-delete", args=[device.pk]))
 
-        self.assertRedirects(response, reverse("organization:list"))
+        self.assertRedirects(response, reverse("organization:dashboard", args=[organization.pk]))
         self.assertFalse(Device.objects.filter(pk=device.pk).exists())
 
     def test_build_zatca_csr_config_uses_device_and_organization_fields(self):
@@ -455,3 +452,161 @@ class OrganizationCrudTests(TestCase):
 
         mock_request_compliance_csid.assert_called_once_with("CSR-CONTENT", "123456")
         self.assertEqual(response_payload["binarySecurityToken"], "token")
+
+
+class LandingPageTests(TestCase):
+    def test_anonymous_sees_welcome_page(self):
+        response = self.client.get(reverse("organization:landing"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "organization/welcome.html")
+
+    def test_admin_redirected_to_organization_list(self):
+        admin = User.objects.create_user(username="admin@example.com", is_staff=True)
+        self.client.force_login(admin)
+
+        response = self.client.get(reverse("organization:landing"))
+
+        self.assertRedirects(response, reverse("organization:list"))
+
+    def test_owner_redirected_to_dashboard(self):
+        organization, user = _make_owned_organization()
+        self.client.force_login(user)
+
+        response = self.client.get(reverse("organization:landing"))
+
+        self.assertRedirects(response, reverse("organization:dashboard", args=[organization.pk]))
+
+    def test_authenticated_user_without_organization_sees_welcome_page(self):
+        user = User.objects.create_user(username="noorg@example.com")
+        self.client.force_login(user)
+
+        response = self.client.get(reverse("organization:landing"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "organization/welcome.html")
+
+
+class CrossOwnerAccessTests(TestCase):
+    def test_dashboard_cross_owner_returns_404(self):
+        organization, _owner = _make_owned_organization()
+        _other_org, other_user = _make_owned_organization(
+            email="other1@example.com", vat_number="399999999900071", cr_number="5555555551",
+        )
+        self.client.force_login(other_user)
+
+        response = self.client.get(reverse("organization:dashboard", args=[organization.pk]))
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_device_create_cross_owner_returns_404(self):
+        organization, _owner = _make_owned_organization(is_active=True)
+        _other_org, other_user = _make_owned_organization(
+            email="other2@example.com", vat_number="399999999900072", cr_number="5555555552", is_active=True,
+        )
+        self.client.force_login(other_user)
+
+        response = self.client.get(reverse("organization:device-create", args=[organization.pk]))
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_device_delete_cross_owner_returns_404(self):
+        organization, _owner = _make_owned_organization()
+        device = Device.objects.create(
+            organization=organization, asset_id="A1", egs_sw_serial_number="S1", otp="1",
+        )
+        _other_org, other_user = _make_owned_organization(
+            email="other3@example.com", vat_number="399999999900073", cr_number="5555555553",
+        )
+        self.client.force_login(other_user)
+
+        response = self.client.get(reverse("organization:device-delete", args=[device.pk]))
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_dashboard_accessible_by_admin_for_any_org(self):
+        organization, _owner = _make_owned_organization()
+        admin = User.objects.create_user(username="admin3@example.com", is_staff=True)
+        self.client.force_login(admin)
+
+        response = self.client.get(reverse("organization:dashboard", args=[organization.pk]))
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_anonymous_redirected_to_login_for_dashboard(self):
+        organization, _owner = _make_owned_organization()
+        dashboard_url = reverse("organization:dashboard", args=[organization.pk])
+
+        response = self.client.get(dashboard_url)
+
+        self.assertRedirects(response, f"{reverse('login')}?next={dashboard_url}")
+
+
+class SignupNegativeTests(TestCase):
+    BASE_DATA = dict(
+        name="New Org",
+        branch_name="Branch-1",
+        industry_category="Healthcare",
+        vat_number="399999999900088",
+        country_code="SA",
+        national_address_code="RCFA3435",
+        street_name="Al Baraqiyah",
+        building_number="3435",
+        city_sub_division="Al Futah Dist",
+        city_name="Riyadh",
+        postal_zone="12632",
+        cr_number="1010138188",
+        invoice_category="1100",
+    )
+
+    @patch("captcha.fields.settings.CAPTCHA_TEST_MODE", True)
+    def test_password_mismatch_rejected(self):
+        data = {
+            **self.BASE_DATA,
+            "email": "mismatch@example.com",
+            "password": "GoodPass!234",
+            "password_confirm": "Different!234",
+            "captcha_0": "dummy",
+            "captcha_1": "PASSED",
+        }
+
+        response = self.client.post(reverse("organization:create"), data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Organization.objects.count(), 0)
+
+    @patch("captcha.fields.settings.CAPTCHA_TEST_MODE", True)
+    def test_duplicate_email_rejected(self):
+        _make_owned_organization(
+            email="dupe@example.com", vat_number="399999999900089", cr_number="1010138177",
+        )
+        data = {
+            **self.BASE_DATA,
+            "vat_number": "399999999900090",
+            "cr_number": "1010138166",
+            "email": "dupe@example.com",
+            "password": "GoodPass!234",
+            "password_confirm": "GoodPass!234",
+            "captcha_0": "dummy",
+            "captcha_1": "PASSED",
+        }
+
+        response = self.client.post(reverse("organization:create"), data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Organization.objects.count(), 1)
+
+    def test_bad_captcha_rejected(self):
+        data = {
+            **self.BASE_DATA,
+            "email": "badcaptcha@example.com",
+            "password": "GoodPass!234",
+            "password_confirm": "GoodPass!234",
+            "captcha_0": "dummy",
+            "captcha_1": "WRONG",
+        }
+
+        response = self.client.post(reverse("organization:create"), data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Organization.objects.count(), 0)

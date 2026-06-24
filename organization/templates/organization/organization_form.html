@@ -14,6 +14,12 @@
         <button type="submit">Save</button>
     </form>
 
-    <p><a href="{% url 'organization:list' %}">Back to organizations</a></p>
+    <p>
+        {% if object %}
+            <a href="{% url 'organization:dashboard' object.pk %}">Back to dashboard</a>
+        {% else %}
+            <a href="{% url 'organization:landing' %}">Back to home</a>
+        {% endif %}
+    </p>
 </body>
 </html>

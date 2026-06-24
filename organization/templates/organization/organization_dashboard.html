@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ organization.name }}</title>
+</head>
+<body>
+    {% if messages %}
+        {% for message in messages %}
+            <p style="color: {% if message.tags == 'error' %}red{% elif message.tags == 'warning' %}orange{% else %}green{% endif %};">
+                {{ message }}
+            </p>
+        {% endfor %}
+    {% endif %}
+
+    <p>
+        {% if user.is_staff or user.is_superuser %}
+            <a href="{% url 'organization:list' %}">Back to all organizations</a> |
+        {% endif %}
+        <form method="post" action="{% url 'logout' %}" style="display: inline;">
+            {% csrf_token %}
+            <button type="submit">Logout</button>
+        </form>
+    </p>
+
+    <h1>{{ organization.name }} ({{ organization.branch_name }})</h1>
+
+    <table border="1" cellpadding="8" cellspacing="0">
+        <tr><th>Email</th><td>{{ organization.email|default:"-" }}</td></tr>
+        <tr><th>VAT Number</th><td>{{ organization.vat_number }}</td></tr>
+        <tr><th>CR Number</th><td>{{ organization.cr_number }}</td></tr>
+        <tr><th>Invoice Category</th><td>{{ organization.get_invoice_category_display }}</td></tr>
+        <tr><th>City</th><td>{{ organization.city_name }}</td></tr>
+        <tr>
+            <th>Status</th>
+            <td>
+                {% if organization.is_active %}
+                    <span style="color: green; font-weight: bold;">Active</span>
+                {% else %}
+                    <span style="color: red;">Inactive</span>
+                {% endif %}
+            </td>
+        </tr>
+    </table>
+
+    <p>
+        {% if organization.devices.exists %}
+            <span>Edit unavailable after device creation</span>
+        {% else %}
+            <a href="{% url 'organization:update' organization.pk %}">Edit Organization</a>
+        {% endif %}
+    </p>
+
+    <h2>Devices</h2>
+    {% if organization.devices.all %}
+        <ul>
+            {% for device in organization.devices.all %}
+                <li>
+                    {{ device.asset_id }} ({{ device.egs_sw_serial_number }})
+                    <a href="{% url 'organization:device-delete' device.pk %}">Delete</a>
+                </li>
+            {% endfor %}
+        </ul>
+    {% else %}
+        <p>No devices added yet.</p>
+    {% endif %}
+
+    {% if organization.is_active %}
+        <p><a href="{% url 'organization:device-create' organization.pk %}">Add Device</a></p>
+    {% else %}
+        <p style="color: #999;">Activate this organization to add devices.</p>
+    {% endif %}
+
+    <h2>Invoices</h2>
+    <p><a href="{% url 'organization:invoice-list' organization.pk %}">View Invoices</a></p>
+</body>
+</html>

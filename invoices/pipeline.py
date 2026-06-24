@@ -13,11 +13,14 @@ from .xml_builder import build_invoice_xml, embed_qr_in_xml
 _INVOICE_TYPE_MAP = {'388': 'invoice', '381': 'credit_note', '383': 'debit_note'}
 
 
-def process_invoice_submission(organization, device, validated_data):
+def process_invoice_submission(organization, device, validated_data, invoice_number_factory=None):
     document_type = _INVOICE_TYPE_MAP.get(validated_data['invoice_type_code'], 'invoice')
 
     with transaction.atomic():
         icv, pih = get_icv_and_pih_atomically(organization)
+
+        if invoice_number_factory is not None:
+            validated_data['invoice_number'] = invoice_number_factory(icv)
 
         submission = InvoiceSubmission.objects.create(
             organization=organization,

@@ -49,6 +49,16 @@ class InvoiceSubmission(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Only populated for document_type=credit_note (the return-invoice flow).
+    original_invoice = models.ForeignKey(
+        'self',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='credit_notes',
+    )
+    system_return_number = models.CharField(max_length=255, blank=True)
+
     class Meta:
         ordering = ['-created_at']
 

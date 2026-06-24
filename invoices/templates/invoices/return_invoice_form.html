@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Return Invoice {{ invoice.payload.invoice_number }}</title>
+</head>
+<body>
+    <h1>Return Invoice {{ invoice.payload.invoice_number }}</h1>
+    <p>Customer: {{ invoice.payload.customer_name }}</p>
+    <p>This will create a full credit note against this invoice and submit it to ZATCA.</p>
+
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Create Credit Note</button>
+    </form>
+
+    <p><a href="{% url 'organization:invoice-list' organization.pk %}">Cancel</a></p>
+</body>
+</html>
