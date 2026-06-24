@@ -7,7 +7,7 @@ from django.views.generic import FormView, ListView
 from organization.mixins import OrgScopedMixin
 
 from .models import InvoiceSubmission
-from .services import create_return_credit_note
+from .services import DuplicateReturnNumberError, create_return_credit_note
 from .xml_builder import _compute_totals
 
 
@@ -96,13 +96,18 @@ class ReturnInvoiceFormView(LoginRequiredMixin, OrgScopedMixin, FormView):
             messages.error(self.request, "Originating device has no valid compliance CSID.")
             return redirect("organization:invoice-list", pk=organization.pk)
 
-        credit_note = create_return_credit_note(
-            organization=organization,
-            device=device,
-            original_invoice=self.invoice,
-            system_return_number=form.cleaned_data["system_return_number"],
-            reason=form.cleaned_data["reason"],
-        )
+        try:
+            credit_note = create_return_credit_note(
+                organization=organization,
+                device=device,
+                original_invoice=self.invoice,
+                system_return_number=form.cleaned_data["system_return_number"],
+                reason=form.cleaned_data["reason"],
+            )
+        except DuplicateReturnNumberError as exc:
+            form.add_error("system_return_number", str(exc))
+            return self.form_invalid(form)
+
         if credit_note.status == "submitted":
             messages.success(
                 self.request, f"Credit note created and submitted to ZATCA (ICV {credit_note.icv})."

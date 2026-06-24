@@ -14,6 +14,12 @@ class InvoiceSubmission(models.Model):
         (DOCUMENT_TYPE_DEBIT_NOTE, 'Debit Note'),
     ]
 
+    INVOICE_TYPE_CODE_TO_DOCUMENT_TYPE = {
+        '388': DOCUMENT_TYPE_INVOICE,
+        '381': DOCUMENT_TYPE_CREDIT_NOTE,
+        '383': DOCUMENT_TYPE_DEBIT_NOTE,
+    }
+
     STATUS_RECEIVED = 'received'
     STATUS_PROCESSING = 'processing'
     STATUS_SUBMITTED = 'submitted'
@@ -37,6 +43,7 @@ class InvoiceSubmission(models.Model):
         related_name='invoice_submissions',
     )
     document_type = models.CharField(max_length=20, choices=DOCUMENT_TYPE_CHOICES)
+    invoice_number = models.CharField(max_length=100, blank=True, default='')
     payload = models.JSONField(help_text="Raw request payload preserved as-is.")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_RECEIVED)
     icv = models.PositiveIntegerField(null=True, blank=True)
@@ -61,6 +68,12 @@ class InvoiceSubmission(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['organization', 'document_type', 'invoice_number'],
+                name='unique_invoice_number_per_org_and_type',
+            ),
+        ]
 
     def __str__(self):
         return f"{self.organization} - {self.document_type} ({self.status})"
