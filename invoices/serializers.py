@@ -2,6 +2,8 @@ from rest_framework import serializers
 
 from organization.models import Device
 
+from .models import InvoiceSubmission
+
 BILLING_REFERENCE_REQUIRED_CODES = {'381', '383'}
 
 
@@ -75,6 +77,18 @@ class InvoiceSubmissionSerializer(serializers.Serializer):
                 {'reason': 'This field is required for credit notes (381) and debit notes (383) — '
                            'ZATCA (BR-KSA-17) requires the reason for issuance.'}
             )
+
+        document_type = InvoiceSubmission.INVOICE_TYPE_CODE_TO_DOCUMENT_TYPE.get(
+            invoice_type_code, InvoiceSubmission.DOCUMENT_TYPE_INVOICE,
+        )
+        invoice_number = data.get('invoice_number', '')
+        if self._organization is not None and InvoiceSubmission.objects.filter(
+            organization=self._organization, document_type=document_type, invoice_number=invoice_number,
+        ).exists():
+            raise serializers.ValidationError(
+                {'invoice_number': f'A {document_type.replace("_", " ")} with this invoice number '
+                                   'already exists for your organization.'}
+            )
         return data
 
     def get_resolved_device(self):
@@ -84,3 +98,11 @@ class InvoiceSubmissionSerializer(serializers.Serializer):
 class ReturnInvoiceSerializer(serializers.Serializer):
     system_return_number = serializers.CharField(required=False, allow_blank=True, default='')
     reason = serializers.CharField(required=False, allow_blank=True, default='')
+
+
+class InvoiceNumbersQuerySerializer(serializers.Serializer):
+    date = serializers.DateField()
+    document_type = serializers.ChoiceField(
+        choices=['invoice', 'credit_note', 'debit_note'],
+        required=False, allow_blank=True, default='',
+    )

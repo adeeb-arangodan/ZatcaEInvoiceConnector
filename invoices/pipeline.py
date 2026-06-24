@@ -10,11 +10,10 @@ from .signing import sign_invoice_xml
 from .submission import submit_to_zatca
 from .xml_builder import build_invoice_xml, embed_qr_in_xml
 
-_INVOICE_TYPE_MAP = {'388': 'invoice', '381': 'credit_note', '383': 'debit_note'}
-
-
 def process_invoice_submission(organization, device, validated_data, invoice_number_factory=None):
-    document_type = _INVOICE_TYPE_MAP.get(validated_data['invoice_type_code'], 'invoice')
+    document_type = InvoiceSubmission.INVOICE_TYPE_CODE_TO_DOCUMENT_TYPE.get(
+        validated_data['invoice_type_code'], InvoiceSubmission.DOCUMENT_TYPE_INVOICE,
+    )
 
     with transaction.atomic():
         icv, pih = get_icv_and_pih_atomically(organization)
@@ -26,6 +25,7 @@ def process_invoice_submission(organization, device, validated_data, invoice_num
             organization=organization,
             device=device,
             document_type=document_type,
+            invoice_number=validated_data['invoice_number'],
             payload=_serializable_data(validated_data),
             status=InvoiceSubmission.STATUS_PROCESSING,
             icv=icv,

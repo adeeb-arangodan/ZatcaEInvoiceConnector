@@ -7,7 +7,7 @@ from .authentication import OrganizationApiKeyAuthentication
 from .models import InvoiceSubmission
 from .permissions import IsActiveOrganization
 from .pipeline import process_invoice_submission
-from .serializers import InvoiceSubmissionSerializer, ReturnInvoiceSerializer
+from .serializers import InvoiceNumbersQuerySerializer, InvoiceSubmissionSerializer, ReturnInvoiceSerializer
 from .services import create_return_credit_note
 
 
@@ -93,3 +93,31 @@ class InvoiceReturnView(APIView):
             },
             status=http_status,
         )
+
+
+class InvoiceNumbersByDateView(APIView):
+    authentication_classes = [OrganizationApiKeyAuthentication]
+    permission_classes = [IsActiveOrganization]
+
+    def get(self, request):
+        serializer = InvoiceNumbersQuerySerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        date = serializer.validated_data['date']
+        document_type = serializer.validated_data.get('document_type') or ''
+
+        queryset = InvoiceSubmission.objects.filter(
+            organization=request.user,
+            payload__issue_date=date.isoformat(),
+        )
+        if document_type:
+            queryset = queryset.filter(document_type=document_type)
+
+        invoice_numbers = list(
+            queryset.order_by('icv').values_list('payload__invoice_number', flat=True)
+        )
+        return Response({
+            'date': date.isoformat(),
+            'document_type': document_type or 'all',
+            'count': len(invoice_numbers),
+            'invoice_numbers': invoice_numbers,
+        })
