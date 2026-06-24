@@ -185,6 +185,18 @@ class InvoiceSubmitViewTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('billing_reference', response.json())
 
+    def test_credit_note_without_reason_returns_400(self):
+        org, _ = self._make_org_with_device()
+        payload = {
+            **VALID_PAYLOAD,
+            'invoice_type_code': '381',
+            'invoice_type_code_name_attribute': '0100000',
+            'billing_reference': 'INV-001',
+        }
+        response = self._post(payload, org)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('reason', response.json())
+
     def test_empty_items_returns_400(self):
         org, _ = self._make_org_with_device()
         payload = {**VALID_PAYLOAD, 'items': []}
@@ -211,6 +223,7 @@ class InvoiceSubmitViewTests(TestCase):
             'invoice_type_code': '381',
             'invoice_type_code_name_attribute': '0100000',
             'billing_reference': 'INV-001',
+            'reason': 'Goods returned',
         }
         response = self._post(payload, org)
         self.assertEqual(response.status_code, 201)
@@ -442,19 +455,26 @@ class DocumentRoutingTests(TestCase):
     def test_invoice_type_code_381_sets_document_type_credit_note(self, mock_submit):
         mock_submit.return_value = {'status_code': 200}
         org, device = self._make_org_with_signing_device()
-        payload = {**VALID_PAYLOAD, 'invoice_type_code': '381', 'billing_reference': 'INV-001'}
+        payload = {
+            **VALID_PAYLOAD, 'invoice_type_code': '381', 'billing_reference': 'INV-001',
+            'reason': 'Goods returned',
+        }
         validated_data, resolved_device = self._validated(payload, org)
 
         submission = process_invoice_submission(org, resolved_device, validated_data)
 
         self.assertEqual(submission.document_type, InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE)
         self.assertEqual(InvoiceSubmission.objects.count(), 1)
+        self.assertIn('<cbc:InstructionNote>Goods returned</cbc:InstructionNote>', submission.xml_document)
 
     @patch('invoices.pipeline.submit_to_zatca')
     def test_invoice_type_code_383_sets_document_type_debit_note(self, mock_submit):
         mock_submit.return_value = {'status_code': 200}
         org, device = self._make_org_with_signing_device()
-        payload = {**VALID_PAYLOAD, 'invoice_type_code': '383', 'billing_reference': 'INV-001'}
+        payload = {
+            **VALID_PAYLOAD, 'invoice_type_code': '383', 'billing_reference': 'INV-001',
+            'reason': 'Additional charges',
+        }
         validated_data, resolved_device = self._validated(payload, org)
 
         submission = process_invoice_submission(org, resolved_device, validated_data)

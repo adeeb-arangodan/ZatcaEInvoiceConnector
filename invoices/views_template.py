@@ -17,9 +17,12 @@ class InvoiceListView(LoginRequiredMixin, OrgScopedMixin, ListView):
 
     def get_queryset(self):
         self.organization = self.get_organization()
-        submissions = list(self.organization.invoice_submissions.select_related("device"))
+        submissions = list(
+            self.organization.invoice_submissions.select_related("device", "original_invoice")
+        )
         for submission in submissions:
             _attach_totals(submission)
+            _attach_remarks(submission)
         return submissions
 
     def get_context_data(self, **kwargs):
@@ -48,6 +51,18 @@ def _attach_totals(submission):
     submission.net_before_tax = totals["tax_exclusive"]
     submission.tax_amount = totals["vat_total"]
     submission.net_with_tax = totals["tax_inclusive"]
+
+
+def _attach_remarks(submission):
+    if submission.document_type == InvoiceSubmission.DOCUMENT_TYPE_INVOICE:
+        submission.remarks = submission.payload.get("notes") or ""
+        return
+
+    if submission.original_invoice_id and submission.original_invoice:
+        original_number = submission.original_invoice.payload.get("invoice_number", "")
+    else:
+        original_number = submission.payload.get("billing_reference", "")
+    submission.remarks = f"Issued for invoice {original_number}" if original_number else ""
 
 
 class ReturnInvoiceForm(forms.Form):

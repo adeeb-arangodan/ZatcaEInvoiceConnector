@@ -7,6 +7,10 @@ def build_return_payload(original_invoice, system_return_number='', reason=''):
     payload['invoice_type_code'] = '381'
     payload['billing_reference'] = payload.get('invoice_number', '')
 
+    # ZATCA (BR-KSA-17) requires a non-empty reason for issuance on every
+    # credit/debit note, so fall back to a generic one if the caller left it blank.
+    payload['reason'] = reason or 'Sales return'
+
     note_parts = [payload.get('notes') or '']
     if reason:
         note_parts.append(f"Return reason: {reason}")

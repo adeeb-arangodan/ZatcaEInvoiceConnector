@@ -32,6 +32,7 @@
                     <th>Tax</th>
                     <th>Net with Tax</th>
                     <th>ICV</th>
+                    <th>Remarks</th>
                     <th>ZATCA Status</th>
                     <th>Actions</th>
                 </tr>
@@ -49,6 +50,7 @@
                         <td>{{ invoice.tax_amount|default:"-" }}</td>
                         <td>{{ invoice.net_with_tax|default:"-" }}</td>
                         <td>{{ invoice.icv }}</td>
+                        <td>{{ invoice.remarks|default:"-" }}</td>
                         <td>
                             {% if invoice.status == 'submitted' %}
                                 <span style="color: green; font-weight: bold;">Submitted</span>

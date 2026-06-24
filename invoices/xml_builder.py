@@ -186,10 +186,19 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
     cust_legal = _sub(customer, CAC, 'PartyLegalEntity')
     _sub(cust_legal, CBC, 'RegistrationName', validated_data['customer_name'])
 
-    # PaymentMeans
-    if validated_data.get('payment_mode'):
+    # PaymentMeans. Also carries the KSA-10 "reason for issuance" (BR-KSA-17),
+    # required for credit/debit notes — ZATCA repurposes the standard UBL
+    # PaymentMeans/InstructionNote field for this rather than a KSA extension.
+    # PaymentMeansCode is mandatory if PaymentMeans is present at all, so a
+    # neutral UNTDID 4461 default ("1" = instrument not defined) is used when
+    # no real payment_mode was supplied.
+    payment_mode = validated_data.get('payment_mode')
+    reason = validated_data.get('reason')
+    if payment_mode or reason:
         pm = _sub(root, CAC, 'PaymentMeans')
-        _sub(pm, CBC, 'PaymentMeansCode', validated_data['payment_mode'])
+        _sub(pm, CBC, 'PaymentMeansCode', payment_mode or '1')
+        if reason:
+            _sub(pm, CBC, 'InstructionNote', reason)
 
     # AllowanceCharge for doc-level discounts
     disc_vat = Decimal(str(validated_data.get('doc_level_discount_vat', 0)))
