@@ -14,7 +14,7 @@ class ItemSerializer(serializers.Serializer):
     qty = serializers.DecimalField(max_digits=15, decimal_places=4)
     price = serializers.DecimalField(max_digits=15, decimal_places=4)
     vat_type = serializers.ChoiceField(choices=['S', 'Z', 'E', 'O'])
-    VatExcepionReason = serializers.CharField(required=False, allow_blank=True, default='')
+    VatExceptionReason = serializers.CharField(required=False, allow_blank=True, default='')
 
 
 class InvoiceSubmissionSerializer(serializers.Serializer):

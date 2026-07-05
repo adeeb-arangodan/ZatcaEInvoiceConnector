@@ -259,8 +259,8 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         amt = Decimal(str(item['qty'])) * Decimal(str(item['price']))
         group = vat_groups.setdefault(vt, {'amount': Decimal('0'), 'reason_code': ''})
         group['amount'] += amt
-        if not group['reason_code'] and item.get('VatExcepionReason'):
-            group['reason_code'] = item['VatExcepionReason']
+        if not group['reason_code'] and item.get('VatExceptionReason'):
+            group['reason_code'] = item['VatExceptionReason']
 
     for vt, group in vat_groups.items():
         taxable_amount = group['amount']
@@ -320,8 +320,8 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         classified_tax = _sub(il_item, CAC, 'ClassifiedTaxCategory')
         _sub(classified_tax, CBC, 'ID', _VAT_CATEGORY_ID[vt])
         _sub(classified_tax, CBC, 'Percent', '15.00' if vt == 'S' else '0.00')
-        if item.get('VatExcepionReason'):
-            _sub(classified_tax, CBC, 'TaxExemptionReasonCode', item['VatExcepionReason'])
+        if item.get('VatExceptionReason'):
+            _sub(classified_tax, CBC, 'TaxExemptionReasonCode', item['VatExceptionReason'])
         line_tax_scheme = _sub(classified_tax, CAC, 'TaxScheme')
         _sub(line_tax_scheme, CBC, 'ID', VAT_SCHEME)
         il_price = _sub(il, CAC, 'Price')
