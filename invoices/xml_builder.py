@@ -224,6 +224,10 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         _sub(ac_tax, CBC, 'Percent', '15.00')
         ac_tax_scheme = _sub(ac_tax, CAC, 'TaxScheme')
         _sub(ac_tax_scheme, CBC, 'ID', VAT_SCHEME)
+    # BR-O-01 etc.: the discount's category must be one that actually has a
+    # matching VAT breakdown group on this invoice — use whichever non-'S'
+    # category the line items use, rather than assuming 'O'.
+    novat_category = next((i['vat_type'] for i in items if i['vat_type'] != 'S'), 'O')
     if disc_novat > 0:
         ac = _sub(root, CAC, 'AllowanceCharge')
         _sub(ac, CBC, 'ChargeIndicator', 'false')
@@ -233,7 +237,7 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         _sub(ac, CBC, 'Amount', str(disc_novat.quantize(Decimal('0.01'))), currencyID='SAR')
         _sub(ac, CBC, 'BaseAmount', str(base_amount), currencyID='SAR')
         ac_tax = _sub(ac, CAC, 'TaxCategory')
-        _sub(ac_tax, CBC, 'ID', 'O')
+        _sub(ac_tax, CBC, 'ID', novat_category)
         _sub(ac_tax, CBC, 'Percent', '0.00')
         ac_tax_scheme = _sub(ac_tax, CAC, 'TaxScheme')
         _sub(ac_tax_scheme, CBC, 'ID', VAT_SCHEME)
@@ -253,15 +257,18 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
     for item in items:
         vt = item['vat_type']
         amt = Decimal(str(item['qty'])) * Decimal(str(item['price']))
-        vat_groups.setdefault(vt, Decimal('0'))
-        vat_groups[vt] += amt
+        group = vat_groups.setdefault(vt, {'amount': Decimal('0'), 'reason_code': ''})
+        group['amount'] += amt
+        if not group['reason_code'] and item.get('VatExcepionReason'):
+            group['reason_code'] = item['VatExcepionReason']
 
-    for vt, taxable_amount in vat_groups.items():
+    for vt, group in vat_groups.items():
+        taxable_amount = group['amount']
         # BR-S-08 / equivalent per-category rules: the category's taxable
         # amount excludes the doc-level allowance modeled against it above.
         if vt == 'S':
             taxable_amount -= disc_vat
-        elif vt == 'O':
+        elif vt == novat_category:
             taxable_amount -= disc_novat
         subtotal = _sub(tax_total, CAC, 'TaxSubtotal')
         _sub(subtotal, CBC, 'TaxableAmount', str(taxable_amount.quantize(Decimal('0.01'))), currencyID='SAR')
@@ -270,6 +277,10 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         cat = _sub(subtotal, CAC, 'TaxCategory')
         _sub(cat, CBC, 'ID', _VAT_CATEGORY_ID[vt])
         _sub(cat, CBC, 'Percent', '15.00' if vt == 'S' else '0.00')
+        # BR-KSA-69: only emit the coded exemption reason (BT-121) when the
+        # caller supplied one on a line — no default guess.
+        if group['reason_code']:
+            _sub(cat, CBC, 'TaxExemptionReasonCode', group['reason_code'])
         if vt in _VAT_EXEMPTION_REASON:
             _sub(cat, CBC, 'TaxExemptionReason', _VAT_EXEMPTION_REASON[vt])
         cat_scheme = _sub(cat, CAC, 'TaxScheme')
@@ -309,6 +320,8 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         classified_tax = _sub(il_item, CAC, 'ClassifiedTaxCategory')
         _sub(classified_tax, CBC, 'ID', _VAT_CATEGORY_ID[vt])
         _sub(classified_tax, CBC, 'Percent', '15.00' if vt == 'S' else '0.00')
+        if item.get('VatExcepionReason'):
+            _sub(classified_tax, CBC, 'TaxExemptionReasonCode', item['VatExcepionReason'])
         line_tax_scheme = _sub(classified_tax, CAC, 'TaxScheme')
         _sub(line_tax_scheme, CBC, 'ID', VAT_SCHEME)
         il_price = _sub(il, CAC, 'Price')
