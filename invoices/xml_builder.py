@@ -44,8 +44,10 @@ def _sub(parent, ns, tag, text=None, **attrib):
 
 def _compute_totals(items, doc_level_discount_vat=0, doc_level_discount_novat=0, advance_paid=0):
     line_extension_amount = Decimal('0')
-    vat_total = Decimal('0')
-    discount_total = Decimal(str(doc_level_discount_vat)) + Decimal(str(doc_level_discount_novat))
+    standard_taxable = Decimal('0')
+    discount_vat = Decimal(str(doc_level_discount_vat))
+    discount_novat = Decimal(str(doc_level_discount_novat))
+    discount_total = discount_vat + discount_novat
     advance = Decimal(str(advance_paid))
 
     for item in items:
@@ -54,8 +56,13 @@ def _compute_totals(items, doc_level_discount_vat=0, doc_level_discount_novat=0,
         line_amount = qty * price
         line_extension_amount += line_amount
         if item['vat_type'] == 'S':
-            vat_total += line_amount * VAT_RATE
+            standard_taxable += line_amount
 
+    # BR-S-08: the standard-rated VAT category's taxable amount must equal
+    # line net amounts minus document-level allowances (the doc-level VAT
+    # discount is modeled as an allowance against the 'S' category), so the
+    # VAT amount itself must be computed on that discounted base.
+    vat_total = (standard_taxable - discount_vat) * VAT_RATE
     tax_exclusive = line_extension_amount - discount_total
     tax_inclusive = tax_exclusive + vat_total
     payable = tax_inclusive - advance
@@ -203,12 +210,15 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
     # AllowanceCharge for doc-level discounts
     disc_vat = Decimal(str(validated_data.get('doc_level_discount_vat', 0)))
     disc_novat = Decimal(str(validated_data.get('doc_level_discount_novat', 0)))
+    base_amount = totals['line_extension']
     if disc_vat > 0:
         ac = _sub(root, CAC, 'AllowanceCharge')
         _sub(ac, CBC, 'ChargeIndicator', 'false')
         _sub(ac, CBC, 'AllowanceChargeReason', 'Discount')
+        if base_amount > 0:
+            _sub(ac, CBC, 'MultiplierFactorNumeric', str((disc_vat / base_amount * 100).quantize(Decimal('0.01'))))
         _sub(ac, CBC, 'Amount', str(disc_vat.quantize(Decimal('0.01'))), currencyID='SAR')
-        _sub(ac, CBC, 'BaseAmount', str(totals['line_extension']), currencyID='SAR')
+        _sub(ac, CBC, 'BaseAmount', str(base_amount), currencyID='SAR')
         ac_tax = _sub(ac, CAC, 'TaxCategory')
         _sub(ac_tax, CBC, 'ID', 'S')
         _sub(ac_tax, CBC, 'Percent', '15.00')
@@ -218,8 +228,10 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         ac = _sub(root, CAC, 'AllowanceCharge')
         _sub(ac, CBC, 'ChargeIndicator', 'false')
         _sub(ac, CBC, 'AllowanceChargeReason', 'Discount')
+        if base_amount > 0:
+            _sub(ac, CBC, 'MultiplierFactorNumeric', str((disc_novat / base_amount * 100).quantize(Decimal('0.01'))))
         _sub(ac, CBC, 'Amount', str(disc_novat.quantize(Decimal('0.01'))), currencyID='SAR')
-        _sub(ac, CBC, 'BaseAmount', str(totals['line_extension']), currencyID='SAR')
+        _sub(ac, CBC, 'BaseAmount', str(base_amount), currencyID='SAR')
         ac_tax = _sub(ac, CAC, 'TaxCategory')
         _sub(ac_tax, CBC, 'ID', 'O')
         _sub(ac_tax, CBC, 'Percent', '0.00')
@@ -245,6 +257,12 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         vat_groups[vt] += amt
 
     for vt, taxable_amount in vat_groups.items():
+        # BR-S-08 / equivalent per-category rules: the category's taxable
+        # amount excludes the doc-level allowance modeled against it above.
+        if vt == 'S':
+            taxable_amount -= disc_vat
+        elif vt == 'O':
+            taxable_amount -= disc_novat
         subtotal = _sub(tax_total, CAC, 'TaxSubtotal')
         _sub(subtotal, CBC, 'TaxableAmount', str(taxable_amount.quantize(Decimal('0.01'))), currencyID='SAR')
         vat_amount = (taxable_amount * VAT_RATE if vt == 'S' else Decimal('0')).quantize(Decimal('0.01'))
