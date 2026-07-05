@@ -1,5 +1,6 @@
 import base64
-from decimal import Decimal
+
+from .xml_builder import _compute_totals
 
 
 def _tlv(tag, value_bytes):
@@ -10,21 +11,17 @@ def generate_qr_tlv(
     organization, validated_data, invoice_hash, signature_b64, public_key_b64, timestamp_str,
     cert_signature_b64='',
 ):
-    items = validated_data['items']
-    line_total = sum(
-        Decimal(str(i['qty'])) * Decimal(str(i['price'])) for i in items
+    totals = _compute_totals(
+        validated_data['items'],
+        validated_data.get('doc_level_discount_vat', 0),
+        validated_data.get('doc_level_discount_novat', 0),
+        validated_data.get('advance_paid', 0),
     )
-    vat_total = sum(
-        Decimal(str(i['qty'])) * Decimal(str(i['price'])) * Decimal('0.15')
-        for i in items if i['vat_type'] == 'S'
-    )
-    discounts = (
-        Decimal(str(validated_data.get('doc_level_discount_vat', 0))) +
-        Decimal(str(validated_data.get('doc_level_discount_novat', 0)))
-    )
-    advance = Decimal(str(validated_data.get('advance_paid', 0)))
-    total_with_vat = (line_total - discounts + vat_total - advance).quantize(Decimal('0.01'))
-    vat_total = vat_total.quantize(Decimal('0.01'))
+    # BT-115 (Amount due for payment) and BT-110/111 (VAT total) must match
+    # the same figures reported in the XML's LegalMonetaryTotal/TaxTotal,
+    # or ZATCA rejects with QRCODE_VALIDATION / invoiceTotal_QRCODE_INVALID.
+    total_with_vat = totals['payable']
+    vat_total = totals['vat_total']
 
     tlv = b''
     tlv += _tlv(1, organization.name.encode('utf-8'))
