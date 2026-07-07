@@ -5,6 +5,7 @@ from organization.models import Device
 from .models import InvoiceSubmission
 
 BILLING_REFERENCE_REQUIRED_CODES = {'381', '383'}
+CUSTOMER_NAT_ID_REQUIRED_EXEMPTION_REASONS = {'VATEX-SA-EDU', 'VATEX-SA-HEA'}
 
 
 class ItemSerializer(serializers.Serializer):
@@ -82,6 +83,14 @@ class InvoiceSubmissionSerializer(serializers.Serializer):
         document_type = InvoiceSubmission.INVOICE_TYPE_CODE_TO_DOCUMENT_TYPE.get(
             invoice_type_code, InvoiceSubmission.DOCUMENT_TYPE_INVOICE,
         )
+        items = data.get('items', [])
+        if any(item.get('VatExceptionReason') in CUSTOMER_NAT_ID_REQUIRED_EXEMPTION_REASONS for item in items) \
+                and not data.get('customer_id_number'):
+            raise serializers.ValidationError(
+                {'customer_id_number': 'This field is required (ZATCA BR-KSA-49) when a line item uses '
+                                        'VATEX-SA-EDU or VATEX-SA-HEA as its VAT exemption reason.'}
+            )
+
         invoice_number = data.get('invoice_number', '')
         if self._organization is not None and InvoiceSubmission.objects.filter(
             organization=self._organization, document_type=document_type, invoice_number=invoice_number,

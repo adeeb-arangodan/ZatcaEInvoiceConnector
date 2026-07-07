@@ -204,6 +204,50 @@ class InvoiceSubmitViewTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('items', response.json())
 
+    def test_hea_exemption_without_customer_id_number_returns_400(self):
+        org, _ = self._make_org_with_device()
+        payload = {
+            **VALID_PAYLOAD,
+            'items': [{
+                **VALID_PAYLOAD['items'][0],
+                'vat_type': 'Z',
+                'VatExceptionReason': 'VATEX-SA-HEA',
+            }],
+        }
+        response = self._post(payload, org)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('customer_id_number', response.json())
+
+    def test_edu_exemption_without_customer_id_number_returns_400(self):
+        org, _ = self._make_org_with_device()
+        payload = {
+            **VALID_PAYLOAD,
+            'items': [{
+                **VALID_PAYLOAD['items'][0],
+                'vat_type': 'Z',
+                'VatExceptionReason': 'VATEX-SA-EDU',
+            }],
+        }
+        response = self._post(payload, org)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('customer_id_number', response.json())
+
+    @patch('invoices.views.process_invoice_submission')
+    def test_hea_exemption_with_customer_id_number_returns_201(self, mock_pipeline):
+        org, _ = self._make_org_with_device()
+        mock_pipeline.return_value = _make_stub_submission()
+        payload = {
+            **VALID_PAYLOAD,
+            'customer_id_number': '1234567890',
+            'items': [{
+                **VALID_PAYLOAD['items'][0],
+                'vat_type': 'Z',
+                'VatExceptionReason': 'VATEX-SA-HEA',
+            }],
+        }
+        response = self._post(payload, org)
+        self.assertEqual(response.status_code, 201)
+
     def test_duplicate_invoice_number_for_same_org_and_type_returns_400(self):
         org, _ = self._make_org_with_device()
         InvoiceSubmission.objects.create(
