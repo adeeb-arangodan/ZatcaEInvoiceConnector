@@ -1,6 +1,6 @@
 from django.urls import path
 
-from invoices.views_template import InvoiceListView, ReturnInvoiceFormView
+from invoices.views_template import InvoiceListView, InvoiceResubmitView, ReturnInvoiceFormView
 
 from .views import (
     DeviceCreateView,
@@ -33,5 +33,10 @@ urlpatterns = [
         "organizations/<int:pk>/invoices/<int:invoice_pk>/return/",
         ReturnInvoiceFormView.as_view(),
         name="invoice-return",
+    ),
+    path(
+        "organizations/<int:pk>/invoices/<int:invoice_pk>/resubmit/",
+        InvoiceResubmitView.as_view(),
+        name="invoice-resubmit",
     ),
 ]

@@ -115,9 +115,9 @@ Lock is released once Phase A commits — none of the above touches the network.
 8. `submission.submit_to_zatca()` — POST to the reporting (simplified) or clearance (standard) endpoint, chosen by whether `invoice_type_code_name_attribute` starts with `0`.
 9. Update the same `InvoiceSubmission` row's `status` to `submitted` or `not_submitted`, plus `zatca_response`/`submitted_at`.
 
-A `not_submitted` row already has a chain-correct, fully signed XML — retrying it later only needs re-POSTing `xml_document`/`invoice_hash`, no regeneration.
+A `not_submitted` row already has a chain-correct, fully signed XML — retrying it later only needs re-POSTing `xml_document`/`invoice_hash`, no regeneration. `pipeline.deliver_to_zatca(submission)` is the shared helper for this (used by both the initial Phase B delivery and manual resubmission); `InvoiceResubmitView` (`invoices/views_template.py`, wired at `organizations/<pk>/invoices/<invoice_pk>/resubmit/` as `organization:invoice-resubmit`) exposes it as a "Resubmit" button on the invoice list for any row with `status == not_submitted`.
 
-What's still missing: a UI/admin view to list `not_submitted` invoices and retry them, and general hardening (retry/backoff on ZATCA timeouts, more granular validation errors).
+What's still missing: general hardening (retry/backoff on ZATCA timeouts, more granular validation errors).
 
 ### Test Patterns
 

@@ -5,10 +5,14 @@ from unittest.mock import MagicMock, patch
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec as ec_module
+from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
+from django.urls import reverse
 
 from organization.models import Device, DeviceKeyMaterial, Organization
 from organization.services import encrypt_private_key
+
+User = get_user_model()
 
 from .hashing import INITIAL_PIH, get_icv_and_pih_atomically, store_invoice_hash
 from .models import InvoiceSubmission
@@ -845,3 +849,106 @@ class InvoiceNumbersByDateViewTests(TestCase):
         response = self.client.get('/api/invoices/numbers/', {'date': '2026-06-24'})
 
         self.assertEqual(response.status_code, 401)
+
+
+class InvoiceResubmitViewTests(TestCase):
+
+    def _make_org_with_signing_device(self, email='owner@example.com', **org_overrides):
+        defaults = {**ORG_DEFAULTS}
+        defaults.update(org_overrides)
+        user = User.objects.create_user(username=email, email=email, password='testpass123')
+        org = Organization.objects.create(email=email, owner_user=user, **defaults)
+        device = Device.objects.create(
+            organization=org,
+            asset_id='ASSET-100',
+            egs_sw_serial_number='SERIAL-200',
+            otp='123456',
+            csid_response=FAKE_CSID,
+        )
+        private_key = ec_module.generate_private_key(ec_module.SECP256R1())
+        pem = private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode('ascii')
+        DeviceKeyMaterial.objects.create(device=device, private_key_pem=encrypt_private_key(pem))
+        return org, device, user
+
+    def _validated(self, payload, org):
+        serializer = InvoiceSubmissionSerializer(data=payload, organization=org)
+        serializer.is_valid(raise_exception=True)
+        return serializer.validated_data, serializer.get_resolved_device()
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_resubmit_not_submitted_invoice_marks_submitted(self, mock_submit):
+        mock_submit.return_value = {'status_code': 400, 'error': 'boom'}
+        org, device, user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(VALID_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+        self.assertEqual(invoice.status, InvoiceSubmission.STATUS_NOT_SUBMITTED)
+
+        mock_submit.return_value = {'status_code': 200}
+        self.client.force_login(user)
+        response = self.client.post(reverse('organization:invoice-resubmit', args=[org.pk, invoice.pk]))
+
+        self.assertRedirects(response, reverse('organization:invoice-list', args=[org.pk]))
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status, InvoiceSubmission.STATUS_SUBMITTED)
+        self.assertIsNotNone(invoice.submitted_at)
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_resubmit_keeps_not_submitted_on_repeated_failure(self, mock_submit):
+        mock_submit.return_value = {'status_code': 400, 'error': 'boom'}
+        org, device, user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(VALID_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        self.client.force_login(user)
+        response = self.client.post(reverse('organization:invoice-resubmit', args=[org.pk, invoice.pk]))
+
+        self.assertRedirects(response, reverse('organization:invoice-list', args=[org.pk]))
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status, InvoiceSubmission.STATUS_NOT_SUBMITTED)
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_resubmit_already_submitted_invoice_does_not_repost(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(VALID_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+        self.assertEqual(invoice.status, InvoiceSubmission.STATUS_SUBMITTED)
+        mock_submit.reset_mock()
+
+        self.client.force_login(user)
+        response = self.client.post(reverse('organization:invoice-resubmit', args=[org.pk, invoice.pk]))
+
+        self.assertRedirects(response, reverse('organization:invoice-list', args=[org.pk]))
+        mock_submit.assert_not_called()
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_resubmit_cross_owner_returns_404(self, mock_submit):
+        mock_submit.return_value = {'status_code': 400}
+        org, device, _user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(VALID_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        _other_org, _other_device, other_user = self._make_org_with_signing_device(
+            email='other@example.com', vat_number='399999999900099', cr_number='9999999997',
+        )
+        self.client.force_login(other_user)
+
+        response = self.client.post(reverse('organization:invoice-resubmit', args=[org.pk, invoice.pk]))
+
+        self.assertEqual(response.status_code, 404)
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_resubmit_anonymous_redirected_to_login(self, mock_submit):
+        mock_submit.return_value = {'status_code': 400}
+        org, device, _user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(VALID_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        response = self.client.post(reverse('organization:invoice-resubmit', args=[org.pk, invoice.pk]))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse('login'), response.url)

@@ -44,7 +44,6 @@ def process_invoice_submission(organization, device, validated_data, invoice_num
             cert_signature_b64,
         )
         final_xml_bytes = embed_qr_in_xml(signed_xml_bytes, qr_code_data)
-        encoded_invoice = encode_to_base64(final_xml_bytes.decode('utf-8'))
 
         submission.invoice_uuid = invoice_uuid
         submission.xml_document = final_xml_bytes.decode('utf-8')
@@ -60,9 +59,20 @@ def process_invoice_submission(organization, device, validated_data, invoice_num
         # short instead of spanning the ZATCA network round-trip below.
         store_invoice_hash(organization, invoice_hash)
 
+    return deliver_to_zatca(submission)
+
+
+def deliver_to_zatca(submission):
+    """POST a submission's already-finalized XML to ZATCA and record the outcome.
+
+    Used both for the initial delivery attempt (Phase B above) and for
+    resubmitting a `not_submitted` row later — in both cases the XML/hash
+    are already chain-correct and signed, so no regeneration is needed.
+    """
+    encoded_invoice = encode_to_base64(submission.xml_document)
     zatca_response = submit_to_zatca(
-        device, invoice_hash, str(invoice_uuid), encoded_invoice,
-        validated_data['invoice_type_code_name_attribute'],
+        submission.device, submission.invoice_hash, str(submission.invoice_uuid), encoded_invoice,
+        submission.payload['invoice_type_code_name_attribute'],
     )
     is_accepted = zatca_response.get('status_code') not in (None, 400, 401, 422)
 

@@ -2,11 +2,13 @@ from django import forms
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.shortcuts import get_object_or_404, redirect
+from django.views import View
 from django.views.generic import FormView, ListView
 
 from organization.mixins import OrgScopedMixin
 
 from .models import InvoiceSubmission
+from .pipeline import deliver_to_zatca
 from .services import DuplicateReturnNumberError, create_return_credit_note
 from .xml_builder import _compute_totals
 
@@ -116,4 +118,26 @@ class ReturnInvoiceFormView(LoginRequiredMixin, OrgScopedMixin, FormView):
             messages.error(
                 self.request, "Credit note created locally but ZATCA submission failed. See status for details."
             )
+        return redirect("organization:invoice-list", pk=organization.pk)
+
+
+class InvoiceResubmitView(LoginRequiredMixin, OrgScopedMixin, View):
+    http_method_names = ["post"]
+
+    def post(self, request, *args, **kwargs):
+        organization = self.get_organization()
+        submission = get_object_or_404(
+            InvoiceSubmission, pk=kwargs["invoice_pk"], organization_id=kwargs["pk"],
+        )
+
+        if submission.status != InvoiceSubmission.STATUS_NOT_SUBMITTED:
+            messages.error(request, "Only invoices with a 'Not Submitted' status can be resubmitted.")
+            return redirect("organization:invoice-list", pk=organization.pk)
+
+        deliver_to_zatca(submission)
+
+        if submission.status == InvoiceSubmission.STATUS_SUBMITTED:
+            messages.success(request, f"Invoice resubmitted to ZATCA successfully (ICV {submission.icv}).")
+        else:
+            messages.error(request, "Resubmission failed. See ZATCA status for details.")
         return redirect("organization:invoice-list", pk=organization.pk)

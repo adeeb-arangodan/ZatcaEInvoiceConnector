@@ -61,10 +61,13 @@
                         <td>
                             {% if invoice.document_type == 'invoice' and invoice.status == 'submitted' %}
                                 <a href="{% url 'organization:invoice-return' organization.pk invoice.pk %}">Return</a>
-                            {% elif invoice.document_type != 'invoice' %}
-                                <span style="color: #999;">&mdash;</span>
+                            {% elif invoice.status == 'not_submitted' %}
+                                <form method="post" action="{% url 'organization:invoice-resubmit' organization.pk invoice.pk %}" style="display: inline;">
+                                    {% csrf_token %}
+                                    <button type="submit">Resubmit</button>
+                                </form>
                             {% else %}
-                                <span style="color: #999;">Not submitted</span>
+                                <span style="color: #999;">&mdash;</span>
                             {% endif %}
                         </td>
                     </tr>
