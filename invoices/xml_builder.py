@@ -215,8 +215,6 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         ac = _sub(root, CAC, 'AllowanceCharge')
         _sub(ac, CBC, 'ChargeIndicator', 'false')
         _sub(ac, CBC, 'AllowanceChargeReason', 'Discount')
-        if base_amount > 0:
-            _sub(ac, CBC, 'MultiplierFactorNumeric', str((disc_vat / base_amount * 100).quantize(Decimal('0.01'))))
         _sub(ac, CBC, 'Amount', str(disc_vat.quantize(Decimal('0.01'))), currencyID='SAR')
         _sub(ac, CBC, 'BaseAmount', str(base_amount), currencyID='SAR')
         ac_tax = _sub(ac, CAC, 'TaxCategory')
@@ -232,8 +230,6 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         ac = _sub(root, CAC, 'AllowanceCharge')
         _sub(ac, CBC, 'ChargeIndicator', 'false')
         _sub(ac, CBC, 'AllowanceChargeReason', 'Discount')
-        if base_amount > 0:
-            _sub(ac, CBC, 'MultiplierFactorNumeric', str((disc_novat / base_amount * 100).quantize(Decimal('0.01'))))
         _sub(ac, CBC, 'Amount', str(disc_novat.quantize(Decimal('0.01'))), currencyID='SAR')
         _sub(ac, CBC, 'BaseAmount', str(base_amount), currencyID='SAR')
         ac_tax = _sub(ac, CAC, 'TaxCategory')
