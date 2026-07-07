@@ -16,20 +16,53 @@ from .xml_builder import _compute_totals
 class InvoiceListView(LoginRequiredMixin, OrgScopedMixin, ListView):
     context_object_name = "invoices"
     template_name = "invoices/invoice_list.html"
+    paginate_by = 25
 
     def get_queryset(self):
         self.organization = self.get_organization()
-        submissions = list(
-            self.organization.invoice_submissions.select_related("device", "original_invoice")
-        )
-        for submission in submissions:
-            _attach_totals(submission)
-            _attach_remarks(submission)
-        return submissions
+        queryset = self.organization.invoice_submissions.select_related("device", "original_invoice")
+
+        params = self.request.GET
+        invoice_number = params.get("invoice_number", "").strip()
+        if invoice_number:
+            queryset = queryset.filter(invoice_number__icontains=invoice_number)
+
+        icv = params.get("icv", "").strip()
+        if icv:
+            queryset = queryset.filter(icv=icv)
+
+        document_type = params.get("document_type", "").strip()
+        if document_type:
+            queryset = queryset.filter(document_type=document_type)
+
+        status = params.get("status", "").strip()
+        if status:
+            queryset = queryset.filter(status=status)
+
+        issue_date = params.get("issue_date", "").strip()
+        if issue_date:
+            queryset = queryset.filter(payload__issue_date=issue_date)
+
+        customer_name = params.get("customer_name", "").strip()
+        if customer_name:
+            queryset = queryset.filter(payload__customer_name__icontains=customer_name)
+
+        return queryset
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context["organization"] = self.organization
+        for submission in context[self.context_object_name]:
+            _attach_totals(submission)
+            _attach_remarks(submission)
+
+        context["filters"] = self.request.GET
+        context["document_type_choices"] = InvoiceSubmission.DOCUMENT_TYPE_CHOICES
+        context["status_choices"] = InvoiceSubmission.STATUS_CHOICES
+
+        preserved_params = self.request.GET.copy()
+        preserved_params.pop("page", None)
+        context["querystring"] = preserved_params.urlencode()
         return context
 
 

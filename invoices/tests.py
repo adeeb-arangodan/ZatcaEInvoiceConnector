@@ -952,3 +952,134 @@ class InvoiceResubmitViewTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertIn(reverse('login'), response.url)
+
+
+class InvoiceListViewTests(TestCase):
+
+    def _make_org_with_device(self, email='owner@example.com', **org_overrides):
+        defaults = {**ORG_DEFAULTS}
+        defaults.update(org_overrides)
+        user = User.objects.create_user(username=email, email=email, password='testpass123')
+        org = Organization.objects.create(email=email, owner_user=user, **defaults)
+        device = Device.objects.create(
+            organization=org,
+            asset_id='ASSET-100',
+            egs_sw_serial_number='SERIAL-200',
+            otp='123456',
+            csid_response=FAKE_CSID,
+        )
+        return org, device, user
+
+    def _make_submission(self, org, device, icv, **payload_overrides):
+        payload = {
+            'invoice_number': f'INV-{icv:03d}',
+            'issue_date': '2026-06-24',
+            'customer_name': 'Test Customer',
+        }
+        payload.update(payload_overrides)
+        return InvoiceSubmission.objects.create(
+            organization=org,
+            device=device,
+            document_type=payload_overrides.get('document_type', InvoiceSubmission.DOCUMENT_TYPE_INVOICE),
+            invoice_number=payload['invoice_number'],
+            payload=payload,
+            status=payload_overrides.get('status', InvoiceSubmission.STATUS_SUBMITTED),
+            icv=icv,
+        )
+
+    def test_filters_by_invoice_number(self):
+        org, device, user = self._make_org_with_device()
+        self._make_submission(org, device, 1, invoice_number='INV-AAA')
+        self._make_submission(org, device, 2, invoice_number='INV-BBB')
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse('organization:invoice-list', args=[org.pk]), {'invoice_number': 'AAA'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([i.icv for i in response.context['invoices']], [1])
+
+    def test_filters_by_customer_name(self):
+        org, device, user = self._make_org_with_device()
+        self._make_submission(org, device, 1, customer_name='Acme Corp')
+        self._make_submission(org, device, 2, customer_name='Beta LLC')
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse('organization:invoice-list', args=[org.pk]), {'customer_name': 'acme'},
+        )
+
+        self.assertEqual([i.icv for i in response.context['invoices']], [1])
+
+    def test_filters_by_issue_date(self):
+        org, device, user = self._make_org_with_device()
+        self._make_submission(org, device, 1, issue_date='2026-06-24')
+        self._make_submission(org, device, 2, issue_date='2026-06-25')
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse('organization:invoice-list', args=[org.pk]), {'issue_date': '2026-06-25'},
+        )
+
+        self.assertEqual([i.icv for i in response.context['invoices']], [2])
+
+    def test_filters_by_icv(self):
+        org, device, user = self._make_org_with_device()
+        self._make_submission(org, device, 1)
+        self._make_submission(org, device, 2)
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-list', args=[org.pk]), {'icv': '2'})
+
+        self.assertEqual([i.icv for i in response.context['invoices']], [2])
+
+    def test_filters_by_document_type(self):
+        org, device, user = self._make_org_with_device()
+        self._make_submission(org, device, 1, document_type=InvoiceSubmission.DOCUMENT_TYPE_INVOICE)
+        self._make_submission(org, device, 2, document_type=InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE)
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse('organization:invoice-list', args=[org.pk]), {'document_type': 'credit_note'},
+        )
+
+        self.assertEqual([i.icv for i in response.context['invoices']], [2])
+
+    def test_filters_by_status(self):
+        org, device, user = self._make_org_with_device()
+        self._make_submission(org, device, 1, status=InvoiceSubmission.STATUS_SUBMITTED)
+        self._make_submission(org, device, 2, status=InvoiceSubmission.STATUS_NOT_SUBMITTED)
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse('organization:invoice-list', args=[org.pk]), {'status': 'not_submitted'},
+        )
+
+        self.assertEqual([i.icv for i in response.context['invoices']], [2])
+
+    def test_pagination_splits_across_pages(self):
+        org, device, user = self._make_org_with_device()
+        for icv in range(1, 31):
+            self._make_submission(org, device, icv)
+        self.client.force_login(user)
+
+        page1 = self.client.get(reverse('organization:invoice-list', args=[org.pk]))
+        page2 = self.client.get(reverse('organization:invoice-list', args=[org.pk]), {'page': 2})
+
+        self.assertEqual(len(page1.context['invoices']), 25)
+        self.assertTrue(page1.context['is_paginated'])
+        self.assertEqual(len(page2.context['invoices']), 5)
+
+    def test_does_not_leak_other_organizations_invoices(self):
+        org, device, user = self._make_org_with_device()
+        other_org, other_device, _other_user = self._make_org_with_device(
+            email='other@example.com', vat_number='399999999900098', cr_number='9999999996',
+        )
+        self._make_submission(org, device, 1)
+        self._make_submission(other_org, other_device, 1)
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-list', args=[org.pk]))
+
+        self.assertEqual(len(response.context['invoices']), 1)

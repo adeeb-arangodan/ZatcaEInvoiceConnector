@@ -18,6 +18,39 @@
 
     <h1>Invoices - {{ organization.name }}</h1>
 
+    <form method="get" style="margin-bottom: 16px;">
+        <label>Issue Date
+            <input type="date" name="issue_date" value="{{ filters.issue_date }}">
+        </label>
+        <label>Customer Name
+            <input type="text" name="customer_name" value="{{ filters.customer_name }}">
+        </label>
+        <label>Invoice Number
+            <input type="text" name="invoice_number" value="{{ filters.invoice_number }}">
+        </label>
+        <label>ICV
+            <input type="number" name="icv" value="{{ filters.icv }}">
+        </label>
+        <label>Type
+            <select name="document_type">
+                <option value="">All</option>
+                {% for value, label in document_type_choices %}
+                    <option value="{{ value }}" {% if filters.document_type == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>ZATCA Status
+            <select name="status">
+                <option value="">All</option>
+                {% for value, label in status_choices %}
+                    <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <button type="submit">Filter</button>
+        <a href="{% url 'organization:invoice-list' organization.pk %}">Clear</a>
+    </form>
+
     {% if invoices %}
         <table border="1" cellpadding="8" cellspacing="0">
             <thead>
@@ -74,6 +107,22 @@
                 {% endfor %}
             </tbody>
         </table>
+
+        {% if is_paginated %}
+            <p style="margin-top: 12px;">
+                {% if page_obj.has_previous %}
+                    <a href="?page=1&{{ querystring }}">&laquo; First</a>
+                    <a href="?page={{ page_obj.previous_page_number }}&{{ querystring }}">Previous</a>
+                {% endif %}
+                Page {{ page_obj.number }} of {{ paginator.num_pages }} ({{ paginator.count }} total)
+                {% if page_obj.has_next %}
+                    <a href="?page={{ page_obj.next_page_number }}&{{ querystring }}">Next</a>
+                    <a href="?page={{ paginator.num_pages }}&{{ querystring }}">Last &raquo;</a>
+                {% endif %}
+            </p>
+        {% endif %}
+    {% elif filters.issue_date or filters.customer_name or filters.invoice_number or filters.icv or filters.document_type or filters.status %}
+        <p>No invoices match these filters.</p>
     {% else %}
         <p>No invoices submitted yet.</p>
     {% endif %}
