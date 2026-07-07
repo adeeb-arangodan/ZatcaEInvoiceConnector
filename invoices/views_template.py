@@ -1,7 +1,10 @@
+from urllib.parse import urlencode
+
 from django import forms
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.shortcuts import get_object_or_404, redirect
+from django.utils import timezone
 from django.views import View
 from django.views.generic import FormView, ListView
 
@@ -18,34 +21,51 @@ class InvoiceListView(LoginRequiredMixin, OrgScopedMixin, ListView):
     template_name = "invoices/invoice_list.html"
     paginate_by = 25
 
+    def _get_filters(self):
+        if hasattr(self, "_filters"):
+            return self._filters
+
+        params = self.request.GET
+        if params:
+            issue_date_from = params.get("issue_date_from", "").strip()
+            issue_date_to = params.get("issue_date_to", "").strip()
+        else:
+            # Cold navigation (e.g. from the dashboard link) with no query
+            # string at all — default to "today" rather than dumping the
+            # organization's entire invoice history into one query/page.
+            today = timezone.localdate().isoformat()
+            issue_date_from = issue_date_to = today
+
+        self._filters = {
+            "invoice_number": params.get("invoice_number", "").strip(),
+            "customer_name": params.get("customer_name", "").strip(),
+            "icv": params.get("icv", "").strip(),
+            "document_type": params.get("document_type", "").strip(),
+            "status": params.get("status", "").strip(),
+            "issue_date_from": issue_date_from,
+            "issue_date_to": issue_date_to,
+        }
+        return self._filters
+
     def get_queryset(self):
         self.organization = self.get_organization()
         queryset = self.organization.invoice_submissions.select_related("device", "original_invoice")
+        filters = self._get_filters()
 
-        params = self.request.GET
-        invoice_number = params.get("invoice_number", "").strip()
-        if invoice_number:
-            queryset = queryset.filter(invoice_number__icontains=invoice_number)
-
-        icv = params.get("icv", "").strip()
-        if icv:
-            queryset = queryset.filter(icv=icv)
-
-        document_type = params.get("document_type", "").strip()
-        if document_type:
-            queryset = queryset.filter(document_type=document_type)
-
-        status = params.get("status", "").strip()
-        if status:
-            queryset = queryset.filter(status=status)
-
-        issue_date = params.get("issue_date", "").strip()
-        if issue_date:
-            queryset = queryset.filter(payload__issue_date=issue_date)
-
-        customer_name = params.get("customer_name", "").strip()
-        if customer_name:
-            queryset = queryset.filter(payload__customer_name__icontains=customer_name)
+        if filters["invoice_number"]:
+            queryset = queryset.filter(invoice_number__icontains=filters["invoice_number"])
+        if filters["icv"]:
+            queryset = queryset.filter(icv=filters["icv"])
+        if filters["document_type"]:
+            queryset = queryset.filter(document_type=filters["document_type"])
+        if filters["status"]:
+            queryset = queryset.filter(status=filters["status"])
+        if filters["issue_date_from"]:
+            queryset = queryset.filter(payload__issue_date__gte=filters["issue_date_from"])
+        if filters["issue_date_to"]:
+            queryset = queryset.filter(payload__issue_date__lte=filters["issue_date_to"])
+        if filters["customer_name"]:
+            queryset = queryset.filter(payload__customer_name__icontains=filters["customer_name"])
 
         return queryset
 
@@ -56,13 +76,11 @@ class InvoiceListView(LoginRequiredMixin, OrgScopedMixin, ListView):
             _attach_totals(submission)
             _attach_remarks(submission)
 
-        context["filters"] = self.request.GET
+        filters = self._get_filters()
+        context["filters"] = filters
         context["document_type_choices"] = InvoiceSubmission.DOCUMENT_TYPE_CHOICES
         context["status_choices"] = InvoiceSubmission.STATUS_CHOICES
-
-        preserved_params = self.request.GET.copy()
-        preserved_params.pop("page", None)
-        context["querystring"] = preserved_params.urlencode()
+        context["querystring"] = urlencode({k: v for k, v in filters.items() if v})
         return context
 
 

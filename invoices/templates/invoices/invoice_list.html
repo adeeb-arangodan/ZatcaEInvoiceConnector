@@ -19,8 +19,11 @@
     <h1>Invoices - {{ organization.name }}</h1>
 
     <form method="get" style="margin-bottom: 16px;">
-        <label>Issue Date
-            <input type="date" name="issue_date" value="{{ filters.issue_date }}">
+        <label>Issue Date From
+            <input type="date" name="issue_date_from" value="{{ filters.issue_date_from }}">
+        </label>
+        <label>To
+            <input type="date" name="issue_date_to" value="{{ filters.issue_date_to }}">
         </label>
         <label>Customer Name
             <input type="text" name="customer_name" value="{{ filters.customer_name }}">
@@ -121,10 +124,8 @@
                 {% endif %}
             </p>
         {% endif %}
-    {% elif filters.issue_date or filters.customer_name or filters.invoice_number or filters.icv or filters.document_type or filters.status %}
-        <p>No invoices match these filters.</p>
     {% else %}
-        <p>No invoices submitted yet.</p>
+        <p>No invoices match these filters.</p>
     {% endif %}
 </body>
 </html>

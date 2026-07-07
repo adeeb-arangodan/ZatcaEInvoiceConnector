@@ -8,6 +8,7 @@ from cryptography.hazmat.primitives.asymmetric import ec as ec_module
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from organization.models import Device, DeviceKeyMaterial, Organization
 from organization.services import encrypt_private_key
@@ -973,7 +974,7 @@ class InvoiceListViewTests(TestCase):
     def _make_submission(self, org, device, icv, **payload_overrides):
         payload = {
             'invoice_number': f'INV-{icv:03d}',
-            'issue_date': '2026-06-24',
+            'issue_date': timezone.localdate().isoformat(),
             'customer_name': 'Test Customer',
         }
         payload.update(payload_overrides)
@@ -1012,17 +1013,45 @@ class InvoiceListViewTests(TestCase):
 
         self.assertEqual([i.icv for i in response.context['invoices']], [1])
 
-    def test_filters_by_issue_date(self):
+    def test_filters_by_issue_date_range(self):
         org, device, user = self._make_org_with_device()
         self._make_submission(org, device, 1, issue_date='2026-06-24')
         self._make_submission(org, device, 2, issue_date='2026-06-25')
+        self._make_submission(org, device, 3, issue_date='2026-06-26')
         self.client.force_login(user)
 
         response = self.client.get(
-            reverse('organization:invoice-list', args=[org.pk]), {'issue_date': '2026-06-25'},
+            reverse('organization:invoice-list', args=[org.pk]),
+            {'issue_date_from': '2026-06-25', 'issue_date_to': '2026-06-25'},
         )
 
         self.assertEqual([i.icv for i in response.context['invoices']], [2])
+
+    def test_filters_by_issue_date_open_ended_range(self):
+        org, device, user = self._make_org_with_device()
+        self._make_submission(org, device, 1, issue_date='2026-06-24')
+        self._make_submission(org, device, 2, issue_date='2026-06-25')
+        self._make_submission(org, device, 3, issue_date='2026-06-26')
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse('organization:invoice-list', args=[org.pk]), {'issue_date_from': '2026-06-25'},
+        )
+
+        self.assertEqual({i.icv for i in response.context['invoices']}, {2, 3})
+
+    def test_defaults_to_todays_invoices_on_cold_navigation(self):
+        org, device, user = self._make_org_with_device()
+        self._make_submission(org, device, 1)
+        self._make_submission(org, device, 2, issue_date='2026-06-24')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-list', args=[org.pk]))
+
+        self.assertEqual([i.icv for i in response.context['invoices']], [1])
+        today = timezone.localdate().isoformat()
+        self.assertEqual(response.context['filters']['issue_date_from'], today)
+        self.assertEqual(response.context['filters']['issue_date_to'], today)
 
     def test_filters_by_icv(self):
         org, device, user = self._make_org_with_device()
