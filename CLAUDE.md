@@ -63,6 +63,7 @@ ZATCA_CLEARANCE_API_ENDPOINT                # Default: /invoices/clearance/singl
 - `permissions.py` — `IsActiveOrganization`: gates all API access to active orgs
 - `serializers.py` — `InvoiceSubmissionSerializer`: validates device ownership, billing reference rules for credit/debit notes, line items
 - `views.py` — `InvoiceSubmitView` (`POST /api/invoices/submit/`): validates, resolves device, runs the pipeline, returns the ZATCA result
+- `views_template.py` — org-scoped template UI: `InvoiceListView` (filterable, paginated list), `ReturnInvoiceFormView` (credit-note return), `InvoiceResubmitView` (retry a `not_submitted` row); all wired from `organization/urls.py`, not `invoices/urls.py` (see "URL Structure")
 - `pipeline.py` — `process_invoice_submission()`: orchestrates the full flow (see "Invoice Submission Pipeline" below) and persists the `InvoiceSubmission`
 - `xml_builder.py` — Builds UBL 2.1 XML by hand via `lxml` (parties, tax totals, lines, ICV/PIH/QR placeholders); also builds the compliance sample invoice used during device onboarding
 - `hashing.py` — Exclusive-C14N + SHA-256 invoice hashing; atomic ICV increment + PIH read/write scoped to `Organization`
@@ -93,6 +94,9 @@ ZATCA_CLEARANCE_API_ENDPOINT                # Default: /invoices/clearance/singl
 /organizations/add/                             Create org
 /organizations/<pk>/edit/                       Edit org (blocked if devices exist)
 /organizations/<pk>/devices/add/                Add device (blocked if org inactive)
+/organizations/<pk>/invoices/                   Invoice list (filterable, paginated) — organization:invoice-list
+/organizations/<pk>/invoices/<id>/return/        Return an invoice as a credit note — organization:invoice-return
+/organizations/<pk>/invoices/<id>/resubmit/      Retry ZATCA delivery for a not_submitted row — organization:invoice-resubmit
 POST /api/invoices/submit/                      Invoice submission API endpoint
 ```
 
@@ -118,6 +122,12 @@ Lock is released once Phase A commits — none of the above touches the network.
 A `not_submitted` row already has a chain-correct, fully signed XML — retrying it later only needs re-POSTing `xml_document`/`invoice_hash`, no regeneration. `pipeline.deliver_to_zatca(submission)` is the shared helper for this (used by both the initial Phase B delivery and manual resubmission); `InvoiceResubmitView` (`invoices/views_template.py`, wired at `organizations/<pk>/invoices/<invoice_pk>/resubmit/` as `organization:invoice-resubmit`) exposes it as a "Resubmit" button on the invoice list for any row with `status == not_submitted`.
 
 What's still missing: general hardening (retry/backoff on ZATCA timeouts, more granular validation errors).
+
+### Invoice List Filtering & Pagination
+
+`InvoiceListView` (`invoices/views_template.py`) filters via GET query params — `invoice_number`, `customer_name` (both `icontains`), `icv`, `document_type`, `status` (exact match), and an `issue_date_from`/`issue_date_to` inclusive range. The date range and `customer_name` filters query into the JSON `payload` field (`payload__issue_date__gte`, `payload__customer_name__icontains`) since those aren't dedicated columns on `InvoiceSubmission`.
+
+On a cold page load with **no query string at all** (e.g. the "View Invoices" dashboard link), `issue_date_from`/`issue_date_to` both default to today — this avoids loading an organization's entire invoice history by default as volume grows over time. Submitting the filter form (even filtering by an unrelated field like `invoice_number` with the date fields left blank) is treated as an explicit choice and does **not** get an implicit today-only constraint bolted on. The list is paginated at 25/page (`paginate_by`), and pagination happens before the per-row totals/remarks computation (`_attach_totals`/`_attach_remarks`) so that work only runs for the current page's rows, not the full filtered set.
 
 ### Test Patterns
 
