@@ -227,3 +227,65 @@ terminating TLS there.
 - [ ] First organization created and activated via `/admin/`, first device
       registered, a test invoice submitted successfully
 - [ ] Backup schedule in place for `db.sqlite3` and `.env`
+
+## 10. Updating an existing deployment
+
+For a PC that's already set up (has its own `.env` and `db.sqlite3`), pull
+the update in place rather than re-cloning — `.env` and `db.sqlite3` are
+both gitignored, so a pull never touches either one.
+
+1. **Check for local drift before pulling.** If any settings were ever
+   hand-edited directly on this PC (e.g. to match a change described here in
+   `DEPLOYMENT.md` before it had actually landed in git yet), a plain pull
+   can fail with "local changes would be overwritten by merge":
+
+   ```cmd
+   git status
+   git diff ZatcaEInvoiceConnector\settings.py
+   ```
+
+   - No local modifications shown → skip to step 2.
+   - Local modifications shown and they look like the same change that's
+     about to come in from the pull → stash and drop it rather than
+     reapplying a now-redundant diff:
+     ```cmd
+     git stash
+     git pull origin master
+     git stash drop
+     ```
+   - Local modifications include something *extra* not present upstream →
+     use `git stash pop` instead and resolve the conflict by hand, keeping
+     the extra bits.
+
+2. **Pull the latest code:**
+   ```cmd
+   git pull origin master
+   ```
+
+3. **Reinstall dependencies** (in case `requirements.txt` changed):
+   ```cmd
+   .venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
+
+4. **Re-run migrate and collectstatic:**
+   ```cmd
+   python manage.py migrate
+   python manage.py collectstatic --noinput
+   ```
+
+5. **Confirm `.env` still has everything the current `settings.py` expects**
+   (`DJANGO_SECRET_KEY`, `DJANGO_DEBUG`, `DJANGO_ALLOWED_HOSTS`,
+   `DJANGO_CSRF_TRUSTED_ORIGINS`, `DEVICE_KEY_ENCRYPTION_KEY`, `ZATCA_*`) —
+   a pull never adds or edits `.env` for you.
+
+6. **Restart the Windows Service** — a `git pull` alone doesn't restart the
+   running process:
+   ```cmd
+   nssm restart ZatcaEInvoiceConnector
+   nssm status ZatcaEInvoiceConnector
+   ```
+
+7. **Smoke-test**: log into `/admin/` and confirm the app still comes up
+   cleanly and reflects the expected new behavior (e.g. a new admin action
+   or page) before considering the update done.
