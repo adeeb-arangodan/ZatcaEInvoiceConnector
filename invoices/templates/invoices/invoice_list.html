@@ -55,6 +55,13 @@
     </form>
 
     {% if invoices %}
+        <p>
+            Summary:
+            {% if summary_scope == "page" %}<strong>Page</strong>{% else %}<a href="{{ summary_toggle_urls.page }}">Page</a>{% endif %}
+            |
+            {% if summary_scope == "all" %}<strong>All pages</strong>{% else %}<a href="{{ summary_toggle_urls.all }}">All pages</a>{% endif %}
+        </p>
+
         <table border="1" cellpadding="8" cellspacing="0">
             <thead>
                 <tr>
@@ -109,6 +116,17 @@
                     </tr>
                 {% endfor %}
             </tbody>
+            <tfoot>
+                <tr>
+                    <td colspan="4"><strong>Summary ({{ summary_scope|title }}, {{ summary.count }} invoice{{ summary.count|pluralize }})</strong></td>
+                    <td><strong>{{ summary.total_amount }}</strong></td>
+                    <td><strong>{{ summary.discount_amount }}</strong></td>
+                    <td><strong>{{ summary.net_before_tax }}</strong></td>
+                    <td><strong>{{ summary.tax_amount }}</strong></td>
+                    <td><strong>{{ summary.net_with_tax }}</strong></td>
+                    <td colspan="4"></td>
+                </tr>
+            </tfoot>
         </table>
 
         {% if is_paginated %}

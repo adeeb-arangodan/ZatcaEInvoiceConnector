@@ -1,3 +1,4 @@
+from decimal import Decimal
 from urllib.parse import urlencode
 
 from django import forms
@@ -47,6 +48,10 @@ class InvoiceListView(LoginRequiredMixin, OrgScopedMixin, ListView):
         }
         return self._filters
 
+    def _get_summary_scope(self):
+        scope = self.request.GET.get("summary_scope", "page")
+        return scope if scope in ("page", "all") else "page"
+
     def get_queryset(self):
         self.organization = self.get_organization()
         queryset = self.organization.invoice_submissions.select_related("device", "original_invoice")
@@ -77,10 +82,27 @@ class InvoiceListView(LoginRequiredMixin, OrgScopedMixin, ListView):
             _attach_remarks(submission)
 
         filters = self._get_filters()
+        summary_scope = self._get_summary_scope()
+        if summary_scope == "all":
+            for submission in self.object_list:
+                _attach_totals(submission)
+            summary = _sum_totals(self.object_list)
+        else:
+            summary = _sum_totals(context[self.context_object_name])
+
         context["filters"] = filters
         context["document_type_choices"] = InvoiceSubmission.DOCUMENT_TYPE_CHOICES
         context["status_choices"] = InvoiceSubmission.STATUS_CHOICES
-        context["querystring"] = urlencode({k: v for k, v in filters.items() if v})
+        context["summary"] = summary
+        context["summary_scope"] = summary_scope
+
+        filter_qs = urlencode({k: v for k, v in filters.items() if v})
+        base = f"?{filter_qs}&" if filter_qs else "?"
+        context["summary_toggle_urls"] = {
+            "page": f"{base}summary_scope=page",
+            "all": f"{base}summary_scope=all",
+        }
+        context["querystring"] = urlencode({**{k: v for k, v in filters.items() if v}, "summary_scope": summary_scope})
         return context
 
 
@@ -104,6 +126,20 @@ def _attach_totals(submission):
     submission.net_before_tax = totals["tax_exclusive"]
     submission.tax_amount = totals["vat_total"]
     submission.net_with_tax = totals["tax_inclusive"]
+
+
+def _sum_totals(submissions):
+    fields = ["total_amount", "discount_amount", "net_before_tax", "tax_amount", "net_with_tax"]
+    sums = {field: Decimal("0") for field in fields}
+    count = 0
+    for submission in submissions:
+        count += 1
+        for field in fields:
+            value = getattr(submission, field)
+            if value is not None:
+                sums[field] += value
+    sums["count"] = count
+    return sums
 
 
 def _attach_remarks(submission):

@@ -1,5 +1,6 @@
 import json
 import uuid
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 from cryptography.fernet import Fernet
@@ -1112,3 +1113,48 @@ class InvoiceListViewTests(TestCase):
         response = self.client.get(reverse('organization:invoice-list', args=[org.pk]))
 
         self.assertEqual(len(response.context['invoices']), 1)
+
+    def _make_submission_with_items(self, org, device, icv, **payload_overrides):
+        payload_overrides.setdefault('items', [
+            {'slno': 1, 'code': 'ITEM-001', 'name': 'Widget', 'qty': '1', 'price': '100', 'vat_type': 'S'},
+        ])
+        return self._make_submission(org, device, icv, **payload_overrides)
+
+    def test_summary_defaults_to_page_scope(self):
+        org, device, user = self._make_org_with_device()
+        for icv in range(1, 31):
+            self._make_submission_with_items(org, device, icv)
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-list', args=[org.pk]))
+
+        self.assertEqual(response.context['summary_scope'], 'page')
+        self.assertEqual(response.context['summary']['count'], 25)
+        self.assertEqual(response.context['summary']['total_amount'], Decimal('2500.00'))
+
+    def test_summary_all_scope_sums_every_filtered_row(self):
+        org, device, user = self._make_org_with_device()
+        for icv in range(1, 31):
+            self._make_submission_with_items(org, device, icv)
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse('organization:invoice-list', args=[org.pk]), {'summary_scope': 'all'},
+        )
+
+        self.assertEqual(response.context['summary_scope'], 'all')
+        self.assertEqual(response.context['summary']['count'], 30)
+        self.assertEqual(response.context['summary']['total_amount'], Decimal('3000.00'))
+
+    def test_summary_scope_invalid_falls_back_to_page(self):
+        org, device, user = self._make_org_with_device()
+        for icv in range(1, 31):
+            self._make_submission_with_items(org, device, icv)
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse('organization:invoice-list', args=[org.pk]), {'summary_scope': 'bogus'},
+        )
+
+        self.assertEqual(response.context['summary_scope'], 'page')
+        self.assertEqual(response.context['summary']['count'], 25)
