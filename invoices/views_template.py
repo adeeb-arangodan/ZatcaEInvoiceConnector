@@ -4,23 +4,28 @@ from urllib.parse import urlencode
 from django import forms
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect
+from django.urls import reverse
 from django.utils import timezone
+from django.utils.text import slugify
 from django.views import View
 from django.views.generic import FormView, ListView
 
 from organization.mixins import OrgScopedMixin
 
+from .exports import build_invoice_workbook
 from .models import InvoiceSubmission
 from .pipeline import deliver_to_zatca
 from .services import DuplicateReturnNumberError, create_return_credit_note
 from .xml_builder import _compute_totals
 
 
-class InvoiceListView(LoginRequiredMixin, OrgScopedMixin, ListView):
-    context_object_name = "invoices"
-    template_name = "invoices/invoice_list.html"
-    paginate_by = 25
+class InvoiceFilterMixin:
+    """Shared GET-param filtering for the invoice list and export views.
+
+    Requires OrgScopedMixin earlier in the MRO for get_organization().
+    """
 
     def _get_filters(self):
         if hasattr(self, "_filters"):
@@ -48,10 +53,6 @@ class InvoiceListView(LoginRequiredMixin, OrgScopedMixin, ListView):
         }
         return self._filters
 
-    def _get_summary_scope(self):
-        scope = self.request.GET.get("summary_scope", "page")
-        return scope if scope in ("page", "all") else "page"
-
     def get_queryset(self):
         self.organization = self.get_organization()
         queryset = self.organization.invoice_submissions.select_related("device", "original_invoice")
@@ -73,6 +74,16 @@ class InvoiceListView(LoginRequiredMixin, OrgScopedMixin, ListView):
             queryset = queryset.filter(payload__customer_name__icontains=filters["customer_name"])
 
         return queryset
+
+
+class InvoiceListView(LoginRequiredMixin, OrgScopedMixin, InvoiceFilterMixin, ListView):
+    context_object_name = "invoices"
+    template_name = "invoices/invoice_list.html"
+    paginate_by = 25
+
+    def _get_summary_scope(self):
+        scope = self.request.GET.get("summary_scope", "page")
+        return scope if scope in ("page", "all") else "page"
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -103,7 +114,30 @@ class InvoiceListView(LoginRequiredMixin, OrgScopedMixin, ListView):
             "all": f"{base}summary_scope=all",
         }
         context["querystring"] = urlencode({**{k: v for k, v in filters.items() if v}, "summary_scope": summary_scope})
+        export_base_url = reverse("organization:invoice-export", args=[self.organization.pk])
+        context["export_url"] = f"{export_base_url}?{filter_qs}" if filter_qs else export_base_url
         return context
+
+
+class InvoiceExportView(LoginRequiredMixin, OrgScopedMixin, InvoiceFilterMixin, View):
+    http_method_names = ["get"]
+
+    def get(self, request, *args, **kwargs):
+        self.organization = self.get_organization()
+        submissions = list(self.get_queryset())
+        for submission in submissions:
+            _attach_totals(submission)
+            _attach_remarks(submission)
+        summary = _sum_totals(submissions)
+        workbook = build_invoice_workbook(submissions, summary)
+
+        response = HttpResponse(
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        filename = f"invoices_{slugify(self.organization.name)}_{timezone.localdate().isoformat()}.xlsx"
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        workbook.save(response)
+        return response
 
 
 def _attach_totals(submission):

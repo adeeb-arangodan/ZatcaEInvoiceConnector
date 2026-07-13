@@ -1,7 +1,10 @@
 import json
 import uuid
 from decimal import Decimal
+from io import BytesIO
 from unittest.mock import MagicMock, patch
+
+from openpyxl import load_workbook
 
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import serialization
@@ -1158,3 +1161,62 @@ class InvoiceListViewTests(TestCase):
 
         self.assertEqual(response.context['summary_scope'], 'page')
         self.assertEqual(response.context['summary']['count'], 25)
+
+    def test_export_returns_filtered_rows_and_summary(self):
+        org, device, user = self._make_org_with_device()
+        self._make_submission_with_items(org, device, 1, issue_date='2026-06-24')
+        self._make_submission_with_items(org, device, 2, issue_date='2026-06-25')
+        self._make_submission_with_items(org, device, 3, issue_date='2026-06-25')
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse('organization:invoice-export', args=[org.pk]),
+            {'issue_date_from': '2026-06-25', 'issue_date_to': '2026-06-25'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response['Content-Type'],
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        self.assertIn('attachment; filename=', response['Content-Disposition'])
+
+        workbook = load_workbook(BytesIO(response.content))
+        sheet = workbook.active
+        rows = list(sheet.iter_rows(values_only=True))
+
+        self.assertEqual(rows[0][0], 'Type')
+        # 2 matching invoices (icv 2 and 3) + header + summary row
+        self.assertEqual(len(rows), 4)
+        invoice_numbers = {rows[1][1], rows[2][1]}
+        self.assertEqual(invoice_numbers, {'INV-002', 'INV-003'})
+        self.assertEqual(rows[3][0], 'Summary (2 invoices)')
+        self.assertEqual(rows[3][4], Decimal('200.00'))
+
+    def test_export_includes_rows_beyond_a_single_page(self):
+        org, device, user = self._make_org_with_device()
+        for icv in range(1, 31):
+            self._make_submission_with_items(org, device, icv)
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-export', args=[org.pk]))
+
+        workbook = load_workbook(BytesIO(response.content))
+        rows = list(workbook.active.iter_rows(values_only=True))
+        # header + 30 invoices + summary row
+        self.assertEqual(len(rows), 32)
+
+    def test_export_does_not_leak_other_organizations_invoices(self):
+        org, device, user = self._make_org_with_device()
+        other_org, other_device, _other_user = self._make_org_with_device(
+            email='exportother@example.com', vat_number='399999999900097', cr_number='9999999995',
+        )
+        self._make_submission_with_items(org, device, 1)
+        self._make_submission_with_items(other_org, other_device, 1)
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-export', args=[org.pk]))
+
+        workbook = load_workbook(BytesIO(response.content))
+        rows = list(workbook.active.iter_rows(values_only=True))
+        self.assertEqual(len(rows), 3)  # header + 1 invoice + summary
