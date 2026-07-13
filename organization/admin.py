@@ -3,6 +3,7 @@ import secrets
 from django.contrib import admin, messages
 
 from .models import Device, Organization
+from .services import reissue_device_credentials
 
 
 @admin.register(Organization)
@@ -41,4 +42,37 @@ class OrganizationAdmin(admin.ModelAdmin):
         self.message_user(request, f"API key regenerated for {queryset.count()} organization(s).", messages.SUCCESS)
 
 
-admin.site.register(Device)
+@admin.register(Device)
+class DeviceAdmin(admin.ModelAdmin):
+    list_display = ("asset_id", "organization", "egs_sw_serial_number", "updated_at")
+    search_fields = ("asset_id", "egs_sw_serial_number", "organization__name")
+    list_filter = ("organization",)
+    actions = ["reissue_credentials"]
+
+    @admin.action(description="Reissue ZATCA credentials (CSR + CSID + PCSID) using current OTP")
+    def reissue_credentials(self, request, queryset):
+        for device in queryset:
+            try:
+                reissue_device_credentials(device)
+            except Exception as exc:
+                self.message_user(
+                    request, f'Failed to reissue credentials for "{device}": {exc}', messages.ERROR,
+                )
+                continue
+
+            if device.pcsid and "binarySecurityToken" in device.pcsid:
+                self.message_user(request, f'Reissued CSID and PCSID for "{device}".', messages.SUCCESS)
+            elif device.csid_response and "binarySecurityToken" in device.csid_response:
+                self.message_user(
+                    request,
+                    f'Reissued CSID for "{device}", but PCSID acquisition failed — '
+                    "see device.pcsid for the error.",
+                    messages.WARNING,
+                )
+            else:
+                self.message_user(
+                    request,
+                    f'Failed to reissue CSID for "{device}" — see device.csid_response for the error. '
+                    "Its OTP may be stale; set a fresh OTP from the ZATCA portal on the device and retry.",
+                    messages.ERROR,
+                )

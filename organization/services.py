@@ -325,3 +325,27 @@ def acquire_pcsid_for_device(device):
     device.pcsid = pcsid_result
     device.save(update_fields=['pcsid', 'updated_at'])
     return pcsid_result
+
+
+def reissue_device_credentials(device):
+    """Regenerate this device's CSR and re-register it with ZATCA against its
+    existing private key, producing a fresh CSID/PCSID guaranteed to match
+    the key already on file in DeviceKeyMaterial.
+
+    Recovery path for a device whose csid_response/pcsid no longer correspond
+    to its stored private key (e.g. after an out-of-band edit to those JSON
+    fields) — ZATCA rejects invoices from such a device with
+    publicKey_QRCODE_INVALID since the QR's public key (derived from the live
+    private key) won't match the public key embedded in the stale certificate.
+
+    Requires device.otp to hold a fresh, unused OTP from the ZATCA portal.
+    """
+    device.csr_content = generate_device_csr(device)
+    device.csid_response = register_device_in_zatca(device)
+    device.pcsid = None
+    device.save(update_fields=['csr_content', 'csid_response', 'pcsid', 'updated_at'])
+
+    if device.csid_response and 'binarySecurityToken' in device.csid_response:
+        device.pcsid = acquire_pcsid_for_device(device)
+
+    return device
