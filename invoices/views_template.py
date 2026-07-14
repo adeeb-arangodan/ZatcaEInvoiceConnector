@@ -15,8 +15,9 @@ from django.views.generic import FormView, ListView
 from organization.mixins import OrgScopedMixin
 
 from .exports import build_invoice_workbook
-from .models import InvoiceSubmission
-from .pipeline import deliver_to_zatca
+from .models import InvoiceSubmission, InvoiceSubmissionFailure
+from .pipeline import InvoiceSubmissionRejected, deliver_to_zatca, process_invoice_submission
+from .serializers import InvoiceSubmissionSerializer
 from .services import DuplicateReturnNumberError, create_return_credit_note
 from .xml_builder import _compute_totals
 
@@ -230,15 +231,17 @@ class ReturnInvoiceFormView(LoginRequiredMixin, OrgScopedMixin, FormView):
         except DuplicateReturnNumberError as exc:
             form.add_error("system_return_number", str(exc))
             return self.form_invalid(form)
-
-        if credit_note.status == "submitted":
-            messages.success(
-                self.request, f"Credit note created and submitted to ZATCA (ICV {credit_note.icv})."
-            )
-        else:
+        except InvoiceSubmissionRejected as exc:
             messages.error(
-                self.request, "Credit note created locally but ZATCA submission failed. See status for details."
+                self.request,
+                f"ZATCA rejected this credit note: {exc.failure.zatca_response}. "
+                "Correct the payload and resubmit from Failed Submissions.",
             )
+            return redirect("organization:invoice-list", pk=organization.pk)
+
+        messages.success(
+            self.request, f"Credit note created and submitted to ZATCA (ICV {credit_note.icv})."
+        )
         return redirect("organization:invoice-list", pk=organization.pk)
 
 
@@ -262,3 +265,88 @@ class InvoiceResubmitView(LoginRequiredMixin, OrgScopedMixin, View):
         else:
             messages.error(request, "Resubmission failed. See ZATCA status for details.")
         return redirect("organization:invoice-list", pk=organization.pk)
+
+
+class FailedSubmissionListView(LoginRequiredMixin, OrgScopedMixin, ListView):
+    context_object_name = "failures"
+    template_name = "invoices/failed_submission_list.html"
+    paginate_by = 25
+
+    def _get_filters(self):
+        if hasattr(self, "_filters"):
+            return self._filters
+
+        params = self.request.GET
+        resolved_param = params.get("resolved", "").strip()
+
+        self._filters = {
+            "invoice_number": params.get("invoice_number", "").strip(),
+            "customer_name": params.get("customer_name", "").strip(),
+            "document_type": params.get("document_type", "").strip(),
+            # Default to unresolved-only so fixed failures don't clutter the
+            # page; an explicit ?resolved=... (including empty-string "all")
+            # overrides that default.
+            "resolved": resolved_param if "resolved" in params else "false",
+        }
+        return self._filters
+
+    def get_queryset(self):
+        self.organization = self.get_organization()
+        queryset = self.organization.invoice_submission_failures.select_related("device")
+        filters = self._get_filters()
+
+        if filters["invoice_number"]:
+            queryset = queryset.filter(invoice_number__icontains=filters["invoice_number"])
+        if filters["document_type"]:
+            queryset = queryset.filter(document_type=filters["document_type"])
+        if filters["customer_name"]:
+            queryset = queryset.filter(payload__customer_name__icontains=filters["customer_name"])
+        if filters["resolved"] == "true":
+            queryset = queryset.filter(resolved=True)
+        elif filters["resolved"] == "false":
+            queryset = queryset.filter(resolved=False)
+
+        return queryset
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["organization"] = self.organization
+        filters = self._get_filters()
+        context["filters"] = filters
+        context["document_type_choices"] = InvoiceSubmission.DOCUMENT_TYPE_CHOICES
+        context["querystring"] = urlencode({k: v for k, v in filters.items() if v})
+        return context
+
+
+class FailedSubmissionResubmitView(LoginRequiredMixin, OrgScopedMixin, View):
+    http_method_names = ["post"]
+
+    def post(self, request, *args, **kwargs):
+        organization = self.get_organization()
+        failure = get_object_or_404(
+            InvoiceSubmissionFailure, pk=kwargs["failure_pk"], organization_id=kwargs["pk"], resolved=False,
+        )
+
+        serializer = InvoiceSubmissionSerializer(data=failure.payload, organization=organization)
+        if not serializer.is_valid():
+            messages.error(request, f"Corrected payload is still invalid: {serializer.errors}")
+            return redirect("organization:failed-submission-list", pk=organization.pk)
+
+        device = serializer.get_resolved_device()
+
+        try:
+            submission = process_invoice_submission(
+                organization=organization, device=device, validated_data=serializer.validated_data,
+            )
+        except InvoiceSubmissionRejected as exc:
+            messages.error(
+                request, f"ZATCA rejected the corrected submission again: {exc.failure.zatca_response}",
+            )
+            return redirect("organization:failed-submission-list", pk=organization.pk)
+
+        failure.resolved = True
+        failure.resolved_submission = submission
+        failure.resolved_at = timezone.now()
+        failure.save(update_fields=["resolved", "resolved_submission", "resolved_at"])
+        messages.success(request, f"Resubmitted successfully as invoice ICV {submission.icv}.")
+        return redirect("organization:failed-submission-list", pk=organization.pk)

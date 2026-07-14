@@ -6,7 +6,7 @@ from rest_framework.views import APIView
 from .authentication import OrganizationApiKeyAuthentication
 from .models import InvoiceSubmission
 from .permissions import IsActiveOrganization
-from .pipeline import process_invoice_submission
+from .pipeline import InvoiceSubmissionRejected, process_invoice_submission
 from .serializers import InvoiceNumbersQuerySerializer, InvoiceSubmissionSerializer, ReturnInvoiceSerializer
 from .services import DuplicateReturnNumberError, create_return_credit_note
 
@@ -29,16 +29,22 @@ class InvoiceSubmitView(APIView):
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
-        submission = process_invoice_submission(
-            organization=request.user,
-            device=device,
-            validated_data=serializer.validated_data,
-        )
-        http_status = (
-            status.HTTP_201_CREATED
-            if submission.status == 'submitted'
-            else status.HTTP_422_UNPROCESSABLE_ENTITY
-        )
+        try:
+            submission = process_invoice_submission(
+                organization=request.user,
+                device=device,
+                validated_data=serializer.validated_data,
+            )
+        except InvoiceSubmissionRejected as exc:
+            return Response(
+                {
+                    'failure_id': exc.failure.pk,
+                    'detail': 'ZATCA rejected this submission. Correct the payload and resubmit.',
+                    'zatca_status': exc.failure.zatca_response,
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
         return Response(
             {
                 'id': submission.pk,
@@ -47,7 +53,7 @@ class InvoiceSubmitView(APIView):
                 'invoice_uuid': str(submission.invoice_uuid) if submission.invoice_uuid else None,
                 'zatca_status': submission.zatca_response,
             },
-            status=http_status,
+            status=status.HTTP_201_CREATED,
         )
 
 
@@ -80,11 +86,16 @@ class InvoiceReturnView(APIView):
             )
         except DuplicateReturnNumberError as exc:
             return Response({'system_return_number': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        http_status = (
-            status.HTTP_201_CREATED
-            if credit_note.status == 'submitted'
-            else status.HTTP_422_UNPROCESSABLE_ENTITY
-        )
+        except InvoiceSubmissionRejected as exc:
+            return Response(
+                {
+                    'failure_id': exc.failure.pk,
+                    'detail': 'ZATCA rejected this credit note. Correct the payload and resubmit.',
+                    'zatca_status': exc.failure.zatca_response,
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
         return Response(
             {
                 'id': credit_note.pk,
@@ -94,7 +105,7 @@ class InvoiceReturnView(APIView):
                 'original_invoice_id': original_invoice.pk,
                 'zatca_status': credit_note.zatca_response,
             },
-            status=http_status,
+            status=status.HTTP_201_CREATED,
         )
 
 

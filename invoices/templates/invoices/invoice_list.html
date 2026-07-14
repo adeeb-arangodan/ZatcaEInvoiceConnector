@@ -14,7 +14,11 @@
         {% endfor %}
     {% endif %}
 
-    <p><a href="{% url 'organization:dashboard' organization.pk %}">Back to dashboard</a></p>
+    <p>
+        <a href="{% url 'organization:dashboard' organization.pk %}">Back to dashboard</a>
+        &nbsp;|&nbsp;
+        <a href="{% url 'organization:failed-submission-list' organization.pk %}">Failed Submissions</a>
+    </p>
 
     <h1>Invoices - {{ organization.name }}</h1>
 

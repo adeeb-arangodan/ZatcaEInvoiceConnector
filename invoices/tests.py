@@ -20,8 +20,8 @@ from organization.services import encrypt_private_key
 User = get_user_model()
 
 from .hashing import INITIAL_PIH, get_icv_and_pih_atomically, store_invoice_hash
-from .models import InvoiceSubmission
-from .pipeline import process_invoice_submission
+from .models import InvoiceSubmission, InvoiceSubmissionFailure
+from .pipeline import InvoiceSubmissionRejected, process_invoice_submission
 from .serializers import InvoiceSubmissionSerializer
 from .services import DuplicateReturnNumberError, create_return_credit_note
 
@@ -462,19 +462,46 @@ class InvoicePipelineTests(TestCase):
         return serializer.validated_data, serializer.get_resolved_device()
 
     @patch('invoices.pipeline.submit_to_zatca')
-    def test_chain_advances_even_when_zatca_rejects(self, mock_submit):
+    def test_chain_does_not_advance_when_zatca_rejects(self, mock_submit):
+        """ZATCA tracks the last ICV/hash it accepted on its own side — advancing our
+        chain on an invoice it rejects would leave a gap it can never reconcile, and
+        every later invoice would inherit that gap and get rejected too. So a rejection
+        must roll back the whole attempt: no row, no ICV/PIH advance."""
         org, device = self._make_org_with_signing_device()
         mock_submit.return_value = {'status_code': 422, 'error': {'message': 'invalid'}}
         validated_data, resolved_device = self._validated(VALID_PAYLOAD, org)
 
-        submission = process_invoice_submission(org, resolved_device, validated_data)
+        with self.assertRaises(InvoiceSubmissionRejected) as ctx:
+            process_invoice_submission(org, resolved_device, validated_data)
 
         org.refresh_from_db()
-        self.assertEqual(submission.status, InvoiceSubmission.STATUS_NOT_SUBMITTED)
+        self.assertEqual(org.invoice_counter, 0)
+        self.assertEqual(org.last_invoice_hash, '')
+        self.assertEqual(InvoiceSubmission.objects.count(), 0)
+
+        failure = ctx.exception.failure
+        self.assertEqual(InvoiceSubmissionFailure.objects.count(), 1)
+        self.assertEqual(failure.organization, org)
+        self.assertEqual(failure.device, device)
+        self.assertEqual(failure.document_type, InvoiceSubmission.DOCUMENT_TYPE_INVOICE)
+        self.assertEqual(failure.invoice_number, VALID_PAYLOAD['invoice_number'])
+        self.assertEqual(failure.zatca_response, {'status_code': 422, 'error': {'message': 'invalid'}})
+        self.assertFalse(failure.resolved)
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_retry_after_rejection_reuses_same_icv(self, mock_submit):
+        org, device = self._make_org_with_signing_device()
+        mock_submit.return_value = {'status_code': 422, 'error': {'message': 'invalid'}}
+        validated_data, resolved_device = self._validated(VALID_PAYLOAD, org)
+
+        with self.assertRaises(InvoiceSubmissionRejected):
+            process_invoice_submission(org, resolved_device, validated_data)
+
+        mock_submit.return_value = {'status_code': 200}
+        submission = process_invoice_submission(org, resolved_device, validated_data)
+
         self.assertEqual(submission.icv, 1)
-        self.assertTrue(submission.invoice_hash)
-        self.assertEqual(org.last_invoice_hash, submission.invoice_hash)
-        self.assertEqual(org.invoice_counter, 1)
+        self.assertEqual(submission.status, InvoiceSubmission.STATUS_SUBMITTED)
 
     @patch('invoices.pipeline.submit_to_zatca')
     def test_chain_advances_on_zatca_acceptance(self, mock_submit):
@@ -488,11 +515,12 @@ class InvoicePipelineTests(TestCase):
         self.assertIsNotNone(submission.submitted_at)
 
     @patch('invoices.pipeline.submit_to_zatca')
-    def test_pih_is_committed_before_zatca_is_contacted(self, mock_submit):
-        """Regression test: the org row lock used to be released (and last_invoice_hash
-        stored) only *after* the ZATCA round-trip, so two concurrent submissions for the
-        same org could read the same stale PIH. The fix commits the local hash and
-        releases the lock before ZATCA is ever contacted."""
+    def test_pih_is_not_committed_until_zatca_accepts(self, mock_submit):
+        """Regression test for the inverted invariant: the org row lock (and
+        last_invoice_hash) must NOT be released/stored until ZATCA has actually
+        accepted the invoice — otherwise a later rejection would leave a chain gap
+        ZATCA can never reconcile. last_invoice_hash must still hold the pre-submission
+        value at the moment ZATCA is contacted."""
         org, device = self._make_org_with_signing_device()
         seen = {}
 
@@ -505,7 +533,8 @@ class InvoicePipelineTests(TestCase):
 
         submission = process_invoice_submission(org, resolved_device, validated_data)
 
-        self.assertEqual(seen['last_invoice_hash'], submission.invoice_hash)
+        self.assertEqual(seen['last_invoice_hash'], '')
+        self.assertNotEqual(submission.invoice_hash, seen['last_invoice_hash'])
 
     @patch('invoices.pipeline.submit_to_zatca')
     def test_build_failure_rolls_back_icv_and_leaves_no_row(self, mock_submit):
@@ -521,6 +550,93 @@ class InvoicePipelineTests(TestCase):
         self.assertEqual(org.last_invoice_hash, '')
         self.assertEqual(InvoiceSubmission.objects.count(), 0)
         mock_submit.assert_not_called()
+
+
+class SubmissionRejectionCallSiteTests(TestCase):
+    """Exercises the real (unmocked) pipeline rejection path through each of the
+    three HTTP-facing call sites, confirming they handle InvoiceSubmissionRejected
+    instead of assuming a returned submission."""
+
+    def _make_org_with_signing_device(self, email='owner@example.com', **org_overrides):
+        defaults = {**ORG_DEFAULTS}
+        defaults.update(org_overrides)
+        user = User.objects.create_user(username=email, email=email, password='testpass123')
+        org = Organization.objects.create(email=email, owner_user=user, **defaults)
+        device = Device.objects.create(
+            organization=org,
+            asset_id='ASSET-100',
+            egs_sw_serial_number='SERIAL-200',
+            otp='123456',
+            csid_response=FAKE_CSID,
+        )
+        private_key = ec_module.generate_private_key(ec_module.SECP256R1())
+        pem = private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode('ascii')
+        DeviceKeyMaterial.objects.create(device=device, private_key_pem=encrypt_private_key(pem))
+        return org, device, user
+
+    def _auth_header(self, org):
+        return {'HTTP_AUTHORIZATION': f'ApiKey {org.api_key}'}
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_invoice_submit_view_rejection_returns_422_and_creates_no_row(self, mock_submit):
+        mock_submit.return_value = {'status_code': 422, 'error': {'message': 'invalid'}}
+        org, device, _user = self._make_org_with_signing_device()
+
+        response = self.client.post(
+            SUBMIT_URL, data=json.dumps(VALID_PAYLOAD), content_type='application/json',
+            **self._auth_header(org),
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn('failure_id', response.json())
+        self.assertEqual(InvoiceSubmission.objects.count(), 0)
+        self.assertEqual(InvoiceSubmissionFailure.objects.count(), 1)
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_invoice_return_view_rejection_returns_422_and_creates_no_row(self, mock_submit):
+        org, device, _user = self._make_org_with_signing_device()
+        mock_submit.return_value = {'status_code': 200}
+        serializer = InvoiceSubmissionSerializer(data=VALID_PAYLOAD, organization=org)
+        serializer.is_valid(raise_exception=True)
+        invoice = process_invoice_submission(org, serializer.get_resolved_device(), serializer.validated_data)
+
+        mock_submit.return_value = {'status_code': 422, 'error': {'message': 'invalid'}}
+        response = self.client.post(
+            f'/api/invoices/{invoice.pk}/return/',
+            data=json.dumps({'reason': 'test'}),
+            content_type='application/json',
+            **self._auth_header(org),
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn('failure_id', response.json())
+        self.assertEqual(
+            InvoiceSubmission.objects.filter(document_type=InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE).count(), 0,
+        )
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_return_invoice_form_view_rejection_shows_message(self, mock_submit):
+        org, device, user = self._make_org_with_signing_device()
+        mock_submit.return_value = {'status_code': 200}
+        serializer = InvoiceSubmissionSerializer(data=VALID_PAYLOAD, organization=org)
+        serializer.is_valid(raise_exception=True)
+        invoice = process_invoice_submission(org, serializer.get_resolved_device(), serializer.validated_data)
+
+        mock_submit.return_value = {'status_code': 422, 'error': {'message': 'invalid'}}
+        self.client.force_login(user)
+        response = self.client.post(
+            reverse('organization:invoice-return', args=[org.pk, invoice.pk]),
+            {'reason': 'damaged'},
+        )
+
+        self.assertRedirects(response, reverse('organization:invoice-list', args=[org.pk]))
+        self.assertEqual(
+            InvoiceSubmission.objects.filter(document_type=InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE).count(), 0,
+        )
 
 
 @override_settings(DEVICE_KEY_ENCRYPTION_KEY=Fernet.generate_key().decode())
@@ -884,13 +1000,29 @@ class InvoiceResubmitViewTests(TestCase):
         serializer.is_valid(raise_exception=True)
         return serializer.validated_data, serializer.get_resolved_device()
 
+    def _make_not_submitted_invoice(self, org, device, icv=1):
+        """Legacy fixture: a not_submitted row with an already-signed XML, as this
+        app used to produce before submission became fully atomic (see CLAUDE.md's
+        "Legacy not_submitted rows"). process_invoice_submission() no longer creates
+        rows like this on rejection, so tests of the legacy Resubmit path build one
+        directly rather than relying on the pipeline to produce it."""
+        return InvoiceSubmission.objects.create(
+            organization=org,
+            device=device,
+            document_type=InvoiceSubmission.DOCUMENT_TYPE_INVOICE,
+            invoice_number=VALID_PAYLOAD['invoice_number'],
+            payload={**VALID_PAYLOAD},
+            status=InvoiceSubmission.STATUS_NOT_SUBMITTED,
+            icv=icv,
+            invoice_uuid=uuid.uuid4(),
+            xml_document='<Invoice>stub</Invoice>',
+            invoice_hash='stub-hash',
+        )
+
     @patch('invoices.pipeline.submit_to_zatca')
     def test_resubmit_not_submitted_invoice_marks_submitted(self, mock_submit):
-        mock_submit.return_value = {'status_code': 400, 'error': 'boom'}
         org, device, user = self._make_org_with_signing_device()
-        validated_data, resolved_device = self._validated(VALID_PAYLOAD, org)
-        invoice = process_invoice_submission(org, resolved_device, validated_data)
-        self.assertEqual(invoice.status, InvoiceSubmission.STATUS_NOT_SUBMITTED)
+        invoice = self._make_not_submitted_invoice(org, device)
 
         mock_submit.return_value = {'status_code': 200}
         self.client.force_login(user)
@@ -905,8 +1037,7 @@ class InvoiceResubmitViewTests(TestCase):
     def test_resubmit_keeps_not_submitted_on_repeated_failure(self, mock_submit):
         mock_submit.return_value = {'status_code': 400, 'error': 'boom'}
         org, device, user = self._make_org_with_signing_device()
-        validated_data, resolved_device = self._validated(VALID_PAYLOAD, org)
-        invoice = process_invoice_submission(org, resolved_device, validated_data)
+        invoice = self._make_not_submitted_invoice(org, device)
 
         self.client.force_login(user)
         response = self.client.post(reverse('organization:invoice-resubmit', args=[org.pk, invoice.pk]))
@@ -917,12 +1048,10 @@ class InvoiceResubmitViewTests(TestCase):
 
     @patch('invoices.pipeline.submit_to_zatca')
     def test_resubmit_already_submitted_invoice_does_not_repost(self, mock_submit):
-        mock_submit.return_value = {'status_code': 200}
         org, device, user = self._make_org_with_signing_device()
-        validated_data, resolved_device = self._validated(VALID_PAYLOAD, org)
-        invoice = process_invoice_submission(org, resolved_device, validated_data)
-        self.assertEqual(invoice.status, InvoiceSubmission.STATUS_SUBMITTED)
-        mock_submit.reset_mock()
+        invoice = self._make_not_submitted_invoice(org, device)
+        invoice.status = InvoiceSubmission.STATUS_SUBMITTED
+        invoice.save(update_fields=['status'])
 
         self.client.force_login(user)
         response = self.client.post(reverse('organization:invoice-resubmit', args=[org.pk, invoice.pk]))
@@ -932,10 +1061,8 @@ class InvoiceResubmitViewTests(TestCase):
 
     @patch('invoices.pipeline.submit_to_zatca')
     def test_resubmit_cross_owner_returns_404(self, mock_submit):
-        mock_submit.return_value = {'status_code': 400}
         org, device, _user = self._make_org_with_signing_device()
-        validated_data, resolved_device = self._validated(VALID_PAYLOAD, org)
-        invoice = process_invoice_submission(org, resolved_device, validated_data)
+        invoice = self._make_not_submitted_invoice(org, device)
 
         _other_org, _other_device, other_user = self._make_org_with_signing_device(
             email='other@example.com', vat_number='399999999900099', cr_number='9999999997',
@@ -945,18 +1072,141 @@ class InvoiceResubmitViewTests(TestCase):
         response = self.client.post(reverse('organization:invoice-resubmit', args=[org.pk, invoice.pk]))
 
         self.assertEqual(response.status_code, 404)
+        mock_submit.assert_not_called()
 
-    @patch('invoices.pipeline.submit_to_zatca')
-    def test_resubmit_anonymous_redirected_to_login(self, mock_submit):
-        mock_submit.return_value = {'status_code': 400}
+    def test_resubmit_anonymous_redirected_to_login(self):
         org, device, _user = self._make_org_with_signing_device()
-        validated_data, resolved_device = self._validated(VALID_PAYLOAD, org)
-        invoice = process_invoice_submission(org, resolved_device, validated_data)
+        invoice = self._make_not_submitted_invoice(org, device)
 
         response = self.client.post(reverse('organization:invoice-resubmit', args=[org.pk, invoice.pk]))
 
         self.assertEqual(response.status_code, 302)
         self.assertIn(reverse('login'), response.url)
+
+
+class FailedSubmissionViewTests(TestCase):
+
+    def _make_org_with_signing_device(self, email='owner@example.com', **org_overrides):
+        defaults = {**ORG_DEFAULTS}
+        defaults.update(org_overrides)
+        user = User.objects.create_user(username=email, email=email, password='testpass123')
+        org = Organization.objects.create(email=email, owner_user=user, **defaults)
+        device = Device.objects.create(
+            organization=org,
+            asset_id='ASSET-100',
+            egs_sw_serial_number='SERIAL-200',
+            otp='123456',
+            csid_response=FAKE_CSID,
+        )
+        private_key = ec_module.generate_private_key(ec_module.SECP256R1())
+        pem = private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode('ascii')
+        DeviceKeyMaterial.objects.create(device=device, private_key_pem=encrypt_private_key(pem))
+        return org, device, user
+
+    def _make_failure(self, org, device, mock_submit, **payload_overrides):
+        mock_submit.return_value = {'status_code': 422, 'error': {'message': 'invalid'}}
+        payload = {**VALID_PAYLOAD, **payload_overrides}
+        serializer = InvoiceSubmissionSerializer(data=payload, organization=org)
+        serializer.is_valid(raise_exception=True)
+        with self.assertRaises(InvoiceSubmissionRejected) as ctx:
+            process_invoice_submission(org, serializer.get_resolved_device(), serializer.validated_data)
+        return ctx.exception.failure
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_list_defaults_to_unresolved_only(self, mock_submit):
+        org, device, user = self._make_org_with_signing_device()
+        unresolved = self._make_failure(org, device, mock_submit)
+        resolved = self._make_failure(org, device, mock_submit, invoice_number='INV-002')
+        resolved.resolved = True
+        resolved.save(update_fields=['resolved'])
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:failed-submission-list', args=[org.pk]))
+
+        self.assertEqual([f.pk for f in response.context['failures']], [unresolved.pk])
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_list_filters_by_invoice_number(self, mock_submit):
+        org, device, user = self._make_org_with_signing_device()
+        self._make_failure(org, device, mock_submit, invoice_number='AAA-1')
+        self._make_failure(org, device, mock_submit, invoice_number='BBB-1')
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse('organization:failed-submission-list', args=[org.pk]), {'invoice_number': 'AAA'},
+        )
+
+        self.assertEqual([f.invoice_number for f in response.context['failures']], ['AAA-1'])
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_resubmit_happy_path_marks_resolved(self, mock_submit):
+        org, device, user = self._make_org_with_signing_device()
+        failure = self._make_failure(org, device, mock_submit)
+        mock_submit.return_value = {'status_code': 200}
+        self.client.force_login(user)
+
+        response = self.client.post(
+            reverse('organization:failed-submission-resubmit', args=[org.pk, failure.pk]),
+        )
+
+        self.assertRedirects(response, reverse('organization:failed-submission-list', args=[org.pk]))
+        failure.refresh_from_db()
+        self.assertTrue(failure.resolved)
+        self.assertIsNotNone(failure.resolved_submission)
+        self.assertEqual(failure.resolved_submission.status, InvoiceSubmission.STATUS_SUBMITTED)
+        self.assertEqual(failure.resolved_submission.icv, 1)
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_resubmit_still_rejected_stays_unresolved_and_logs_new_failure(self, mock_submit):
+        org, device, user = self._make_org_with_signing_device()
+        failure = self._make_failure(org, device, mock_submit)
+        self.client.force_login(user)
+
+        response = self.client.post(
+            reverse('organization:failed-submission-resubmit', args=[org.pk, failure.pk]),
+        )
+
+        self.assertRedirects(response, reverse('organization:failed-submission-list', args=[org.pk]))
+        failure.refresh_from_db()
+        self.assertFalse(failure.resolved)
+        self.assertEqual(InvoiceSubmissionFailure.objects.count(), 2)
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_resubmit_invalid_payload_shows_errors_without_submitting(self, mock_submit):
+        org, device, user = self._make_org_with_signing_device()
+        failure = self._make_failure(org, device, mock_submit)
+        failure.payload = {**failure.payload, 'items': []}
+        failure.save(update_fields=['payload'])
+        self.client.force_login(user)
+        mock_submit.reset_mock()
+
+        response = self.client.post(
+            reverse('organization:failed-submission-resubmit', args=[org.pk, failure.pk]),
+        )
+
+        self.assertRedirects(response, reverse('organization:failed-submission-list', args=[org.pk]))
+        failure.refresh_from_db()
+        self.assertFalse(failure.resolved)
+        mock_submit.assert_not_called()
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_resubmit_cross_owner_returns_404(self, mock_submit):
+        org, device, _user = self._make_org_with_signing_device()
+        failure = self._make_failure(org, device, mock_submit)
+        _other_org, _other_device, other_user = self._make_org_with_signing_device(
+            email='other@example.com', vat_number='399999999900098', cr_number='9999999996',
+        )
+        self.client.force_login(other_user)
+
+        response = self.client.post(
+            reverse('organization:failed-submission-resubmit', args=[org.pk, failure.pk]),
+        )
+
+        self.assertEqual(response.status_code, 404)
 
 
 class InvoiceListViewTests(TestCase):

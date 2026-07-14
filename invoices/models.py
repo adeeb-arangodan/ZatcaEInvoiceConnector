@@ -77,3 +77,44 @@ class InvoiceSubmission(models.Model):
 
     def __str__(self):
         return f"{self.organization} - {self.document_type} ({self.status})"
+
+
+class InvoiceSubmissionFailure(models.Model):
+    """A ZATCA-rejected submission attempt that never consumed an ICV.
+
+    process_invoice_submission() rolls back the whole attempt (ICV/PIH/row)
+    on rejection and logs it here instead, so the chain never has a gap.
+    Correct payload here (e.g. via admin) and resubmit via the Failed
+    Submissions page to try again with a fresh ICV.
+    """
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='invoice_submission_failures',
+    )
+    device = models.ForeignKey(
+        Device,
+        on_delete=models.CASCADE,
+        related_name='invoice_submission_failures',
+    )
+    document_type = models.CharField(max_length=20, choices=InvoiceSubmission.DOCUMENT_TYPE_CHOICES)
+    invoice_number = models.CharField(max_length=100, blank=True, default='')
+    payload = models.JSONField()
+    zatca_response = models.JSONField(null=True, blank=True)
+    resolved = models.BooleanField(default=False)
+    resolved_submission = models.ForeignKey(
+        InvoiceSubmission,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='+',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.organization} - {self.document_type} failure ({self.invoice_number})"

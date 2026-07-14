@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Failed Submissions - {{ organization.name }}</title>
+</head>
+<body>
+    {% if messages %}
+        {% for message in messages %}
+            <p style="color: {% if message.tags == 'error' %}red{% elif message.tags == 'warning' %}orange{% else %}green{% endif %};">
+                {{ message }}
+            </p>
+        {% endfor %}
+    {% endif %}
+
+    <p>
+        <a href="{% url 'organization:dashboard' organization.pk %}">Back to dashboard</a>
+        &nbsp;|&nbsp;
+        <a href="{% url 'organization:invoice-list' organization.pk %}">View Invoices</a>
+    </p>
+
+    <h1>Failed Submissions - {{ organization.name }}</h1>
+    <p>
+        Invoices ZATCA rejected. These never consumed an ICV, so nothing here needs to be
+        fixed "in order" &mdash; correct the payload in Django admin, then click Resubmit
+        to try again with a fresh ICV.
+    </p>
+
+    <form method="get" style="margin-bottom: 16px;">
+        <label>Customer Name
+            <input type="text" name="customer_name" value="{{ filters.customer_name }}">
+        </label>
+        <label>Invoice Number
+            <input type="text" name="invoice_number" value="{{ filters.invoice_number }}">
+        </label>
+        <label>Type
+            <select name="document_type">
+                <option value="">All</option>
+                {% for value, label in document_type_choices %}
+                    <option value="{{ value }}" {% if filters.document_type == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>Show
+            <select name="resolved">
+                <option value="false" {% if filters.resolved == "false" %}selected{% endif %}>Unresolved only</option>
+                <option value="true" {% if filters.resolved == "true" %}selected{% endif %}>Resolved only</option>
+                <option value="" {% if filters.resolved == "" %}selected{% endif %}>All</option>
+            </select>
+        </label>
+        <button type="submit">Filter</button>
+        <a href="{% url 'organization:failed-submission-list' organization.pk %}">Clear</a>
+    </form>
+
+    {% if failures %}
+        <table border="1" cellpadding="8" cellspacing="0">
+            <thead>
+                <tr>
+                    <th>Type</th>
+                    <th>Invoice Number</th>
+                    <th>Customer</th>
+                    <th>ZATCA Error</th>
+                    <th>Created At</th>
+                    <th>Resolved</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for failure in failures %}
+                    <tr>
+                        <td>{{ failure.get_document_type_display }}</td>
+                        <td>{{ failure.invoice_number|default:"-" }}</td>
+                        <td>{{ failure.payload.customer_name|default:"-" }}</td>
+                        <td>{{ failure.zatca_response }}</td>
+                        <td>{{ failure.created_at }}</td>
+                        <td>
+                            {% if failure.resolved %}
+                                <span style="color: green; font-weight: bold;">Resolved</span>
+                            {% else %}
+                                <span style="color: red;">Unresolved</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if not failure.resolved %}
+                                <form method="post" action="{% url 'organization:failed-submission-resubmit' organization.pk failure.pk %}" style="display: inline;">
+                                    {% csrf_token %}
+                                    <button type="submit">Resubmit</button>
+                                </form>
+                            {% else %}
+                                <span style="color: #999;">&mdash;</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% if is_paginated %}
+            <p style="margin-top: 12px;">
+                {% if page_obj.has_previous %}
+                    <a href="?page=1&{{ querystring }}">&laquo; First</a>
+                    <a href="?page={{ page_obj.previous_page_number }}&{{ querystring }}">Previous</a>
+                {% endif %}
+                Page {{ page_obj.number }} of {{ paginator.num_pages }} ({{ paginator.count }} total)
+                {% if page_obj.has_next %}
+                    <a href="?page={{ page_obj.next_page_number }}&{{ querystring }}">Next</a>
+                    <a href="?page={{ paginator.num_pages }}&{{ querystring }}">Last &raquo;</a>
+                {% endif %}
+            </p>
+        {% endif %}
+    {% else %}
+        <p>No failed submissions match these filters.</p>
+    {% endif %}
+</body>
+</html>
