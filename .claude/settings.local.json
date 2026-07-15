@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git commit *)",
+      "Bash(git add *)",
+      "Bash(git push *)",
+      "Bash(openssl version *)",
+      "Bash(D:/Develop/ZatcaEInvoiceConnector/env/python.exe *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://127.0.0.1:8001/)",
+      "Bash(DEVICE_KEY_ENCRYPTION_KEY=\"lF8h9z6yQyKj3qF2b3p0m8q3yqgF8h9z6yQyKj3qF2b0=\" D:/Develop/ZatcaEInvoiceConnector/env/python.exe *)",
+      "Bash(cd /tmp)",
+      "Bash(rm -f cookies.txt)",
+      "Bash(curl -s -c cookies.txt -b cookies.txt http://127.0.0.1:8001/organizations/__TRACKED_VAR__/devices/add/)",
+      "Bash(rm -f cookies.txt resp_csidfail.html)",
+      "Bash(rm -f cookies.txt resp_pcsidfail.html)",
+      "Bash(rm -f cookies.txt resp_pcsidexc.html)",
+      "Bash(rm -f cookies.txt resp_malformed.html resp_none.html)",
+      "Bash(curl -s -c cookies.txt -b cookies.txt http://127.0.0.1:8001/ -o resp_followup.html)",
+      "Bash(git fetch *)",
+      "Bash(git ls-tree *)",
+      "Bash(gh pr *)",
+      "Read(//d//**)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Program Files \\(x86\\)/**)",
+      "PowerShell(Test-Path *)",
+      "Bash(env/python.exe manage.py test invoices organization)",
+      "Bash(./env/python.exe manage.py shell -c ' *)"
+    ]
+  }
+}
