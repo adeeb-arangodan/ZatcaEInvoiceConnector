@@ -1470,3 +1470,100 @@ class InvoiceListViewTests(TestCase):
         workbook = load_workbook(BytesIO(response.content))
         rows = list(workbook.active.iter_rows(values_only=True))
         self.assertEqual(len(rows), 3)  # header + 1 invoice + summary
+
+
+class InvoiceDetailViewTests(TestCase):
+
+    def _make_org_with_device(self, email='owner@example.com', **org_overrides):
+        defaults = {**ORG_DEFAULTS}
+        defaults.update(org_overrides)
+        user = User.objects.create_user(username=email, email=email, password='testpass123')
+        org = Organization.objects.create(email=email, owner_user=user, **defaults)
+        device = Device.objects.create(
+            organization=org,
+            asset_id='ASSET-100',
+            egs_sw_serial_number='SERIAL-200',
+            otp='123456',
+            csid_response=FAKE_CSID,
+        )
+        return org, device, user
+
+    def _make_submission(self, org, device, icv=1, qr_code_data='', **payload_overrides):
+        payload = {
+            'invoice_number': f'INV-{icv:03d}',
+            'issue_date': '2026-07-14',
+            'issue_time': '10:00:00',
+            'invoice_type_code_name_attribute': '0100000',
+            'customer_name': 'Test Customer',
+            'customer_vat': '300000000000003',
+            'customer_city': 'Riyadh',
+            'customer_country_code': 'SA',
+            'items': [
+                {'slno': 1, 'code': 'ITEM-1', 'name': 'Widget', 'qty': '2', 'price': '50', 'vat_type': 'S'},
+            ],
+        }
+        payload.update(payload_overrides)
+        return InvoiceSubmission.objects.create(
+            organization=org,
+            device=device,
+            document_type=payload_overrides.get('document_type', InvoiceSubmission.DOCUMENT_TYPE_INVOICE),
+            invoice_number=payload['invoice_number'],
+            payload=payload,
+            status=InvoiceSubmission.STATUS_SUBMITTED,
+            icv=icv,
+            qr_code_data=qr_code_data,
+        )
+
+    def test_detail_shows_line_items_and_totals(self):
+        org, device, user = self._make_org_with_device()
+        invoice = self._make_submission(org, device)
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-detail', args=[org.pk, invoice.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        line_items = response.context['line_items']
+        self.assertEqual(len(line_items), 1)
+        self.assertEqual(line_items[0]['line_amount'], Decimal('100.00'))
+        self.assertEqual(line_items[0]['line_vat'], Decimal('15.00'))
+        self.assertEqual(line_items[0]['line_total'], Decimal('115.00'))
+        self.assertEqual(response.context['invoice'].net_with_tax, Decimal('115.00'))
+
+    def test_detail_renders_qr_image_when_qr_code_data_present(self):
+        org, device, user = self._make_org_with_device()
+        invoice = self._make_submission(org, device, qr_code_data='AQhUZXN0IENv')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-detail', args=[org.pk, invoice.pk]))
+
+        self.assertTrue(response.context['qr_image'].startswith('data:image/png;base64,'))
+
+    def test_detail_qr_image_none_when_not_yet_available(self):
+        org, device, user = self._make_org_with_device()
+        invoice = self._make_submission(org, device, qr_code_data='')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-detail', args=[org.pk, invoice.pk]))
+
+        self.assertIsNone(response.context['qr_image'])
+
+    def test_detail_does_not_leak_other_organizations_invoice(self):
+        org, device, user = self._make_org_with_device()
+        other_org, other_device, _other_user = self._make_org_with_device(
+            email='detailother@example.com', vat_number='399999999900096', cr_number='9999999994',
+        )
+        other_invoice = self._make_submission(other_org, other_device)
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-detail', args=[org.pk, other_invoice.pk]))
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_detail_anonymous_redirected_to_login(self):
+        org, device, _user = self._make_org_with_device()
+        invoice = self._make_submission(org, device)
+
+        response = self.client.get(reverse('organization:invoice-detail', args=[org.pk, invoice.pk]))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse('login'), response.url)

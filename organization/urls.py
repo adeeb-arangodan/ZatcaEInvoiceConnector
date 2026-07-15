@@ -3,6 +3,7 @@ from django.urls import path
 from invoices.views_template import (
     FailedSubmissionListView,
     FailedSubmissionResubmitView,
+    InvoiceDetailView,
     InvoiceExportView,
     InvoiceListView,
     InvoiceResubmitView,
@@ -37,6 +38,11 @@ urlpatterns = [
     path("devices/<int:pk>/delete/", DeviceDeleteView.as_view(), name="device-delete"),
     path("organizations/<int:pk>/invoices/", InvoiceListView.as_view(), name="invoice-list"),
     path("organizations/<int:pk>/invoices/export/", InvoiceExportView.as_view(), name="invoice-export"),
+    path(
+        "organizations/<int:pk>/invoices/<int:invoice_pk>/",
+        InvoiceDetailView.as_view(),
+        name="invoice-detail",
+    ),
     path(
         "organizations/<int:pk>/invoices/<int:invoice_pk>/return/",
         ReturnInvoiceFormView.as_view(),

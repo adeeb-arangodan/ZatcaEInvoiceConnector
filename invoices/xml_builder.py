@@ -1,5 +1,5 @@
 import uuid
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from lxml import etree
 
@@ -68,13 +68,13 @@ def _compute_totals(items, doc_level_discount_vat=0, doc_level_discount_novat=0,
     payable = tax_inclusive - advance
 
     return {
-        'line_extension': line_extension_amount.quantize(Decimal('0.01')),
-        'discount_total': discount_total.quantize(Decimal('0.01')),
-        'tax_exclusive': tax_exclusive.quantize(Decimal('0.01')),
-        'vat_total': vat_total.quantize(Decimal('0.01')),
-        'tax_inclusive': tax_inclusive.quantize(Decimal('0.01')),
-        'advance': advance.quantize(Decimal('0.01')),
-        'payable': payable.quantize(Decimal('0.01')),
+        'line_extension': line_extension_amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+        'discount_total': discount_total.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+        'tax_exclusive': tax_exclusive.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+        'vat_total': vat_total.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+        'tax_inclusive': tax_inclusive.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+        'advance': advance.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+        'payable': payable.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
     }
 
 
@@ -216,8 +216,8 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         _sub(ac, CBC, 'ChargeIndicator', 'false')
         _sub(ac, CBC, 'AllowanceChargeReason', 'Discount')
         if base_amount > 0:
-            _sub(ac, CBC, 'MultiplierFactorNumeric', str((disc_vat / base_amount * 100).quantize(Decimal('0.01'))))
-        _sub(ac, CBC, 'Amount', str(disc_vat.quantize(Decimal('0.01'))), currencyID='SAR')
+            _sub(ac, CBC, 'MultiplierFactorNumeric', str((disc_vat / base_amount * 100).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)))
+        _sub(ac, CBC, 'Amount', str(disc_vat.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)), currencyID='SAR')
         _sub(ac, CBC, 'BaseAmount', str(base_amount), currencyID='SAR')
         ac_tax = _sub(ac, CAC, 'TaxCategory')
         _sub(ac_tax, CBC, 'ID', 'S')
@@ -233,8 +233,8 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         _sub(ac, CBC, 'ChargeIndicator', 'false')
         _sub(ac, CBC, 'AllowanceChargeReason', 'Discount')
         if base_amount > 0:
-            _sub(ac, CBC, 'MultiplierFactorNumeric', str((disc_novat / base_amount * 100).quantize(Decimal('0.01'))))
-        _sub(ac, CBC, 'Amount', str(disc_novat.quantize(Decimal('0.01'))), currencyID='SAR')
+            _sub(ac, CBC, 'MultiplierFactorNumeric', str((disc_novat / base_amount * 100).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)))
+        _sub(ac, CBC, 'Amount', str(disc_novat.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)), currencyID='SAR')
         _sub(ac, CBC, 'BaseAmount', str(base_amount), currencyID='SAR')
         ac_tax = _sub(ac, CAC, 'TaxCategory')
         _sub(ac_tax, CBC, 'ID', novat_category)
@@ -271,8 +271,8 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
         elif vt == novat_category:
             taxable_amount -= disc_novat
         subtotal = _sub(tax_total, CAC, 'TaxSubtotal')
-        _sub(subtotal, CBC, 'TaxableAmount', str(taxable_amount.quantize(Decimal('0.01'))), currencyID='SAR')
-        vat_amount = (taxable_amount * VAT_RATE if vt == 'S' else Decimal('0')).quantize(Decimal('0.01'))
+        _sub(subtotal, CBC, 'TaxableAmount', str(taxable_amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)), currencyID='SAR')
+        vat_amount = (taxable_amount * VAT_RATE if vt == 'S' else Decimal('0')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         _sub(subtotal, CBC, 'TaxAmount', str(vat_amount), currencyID='SAR')
         cat = _sub(subtotal, CAC, 'TaxCategory')
         _sub(cat, CBC, 'ID', _VAT_CATEGORY_ID[vt])
@@ -301,9 +301,9 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
     for idx, item in enumerate(items, start=1):
         qty = Decimal(str(item['qty']))
         price = Decimal(str(item['price']))
-        line_amount = (qty * price).quantize(Decimal('0.01'))
+        line_amount = (qty * price).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         vt = item['vat_type']
-        line_vat = (line_amount * VAT_RATE if vt == 'S' else Decimal('0')).quantize(Decimal('0.01'))
+        line_vat = (line_amount * VAT_RATE if vt == 'S' else Decimal('0')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
         il = _sub(root, CAC, 'InvoiceLine')
         _sub(il, CBC, 'ID', str(item['slno']))

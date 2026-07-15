@@ -1,4 +1,7 @@
 import base64
+import io
+
+import qrcode
 
 from .xml_builder import _compute_totals
 
@@ -41,3 +44,14 @@ def generate_qr_tlv(
         # bytes, like tag 8 — not the ASCII-text encoding used for tags 6/7).
         tlv += _tlv(9, base64.b64decode(cert_signature_b64))
     return base64.b64encode(tlv).decode('ascii')
+
+
+def generate_qr_image_data_uri(qr_code_data):
+    """Render the same base64 TLV string embedded in the invoice XML as a
+    scannable QR code image, for display/printing — not a separate QR, the
+    same data a scanner would read out of the XML's QR AdditionalDocumentReference."""
+    image = qrcode.make(qr_code_data)
+    buffer = io.BytesIO()
+    image.save(buffer, format='PNG')
+    encoded = base64.b64encode(buffer.getvalue()).decode('ascii')
+    return f'data:image/png;base64,{encoded}'

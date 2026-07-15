@@ -90,7 +90,7 @@
                 {% for invoice in invoices %}
                     <tr>
                         <td>{{ invoice.get_document_type_display }}</td>
-                        <td>{{ invoice.payload.invoice_number }}</td>
+                        <td><a href="{% url 'organization:invoice-detail' organization.pk invoice.pk %}">{{ invoice.payload.invoice_number }}</a></td>
                         <td>{{ invoice.payload.customer_name }}</td>
                         <td>{{ invoice.payload.issue_date }}</td>
                         <td>{{ invoice.total_amount|default:"-" }}</td>

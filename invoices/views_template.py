@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from urllib.parse import urlencode
 
 from django import forms
@@ -10,16 +10,17 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.text import slugify
 from django.views import View
-from django.views.generic import FormView, ListView
+from django.views.generic import DetailView, FormView, ListView
 
 from organization.mixins import OrgScopedMixin
 
 from .exports import build_invoice_workbook
 from .models import InvoiceSubmission, InvoiceSubmissionFailure
 from .pipeline import InvoiceSubmissionRejected, deliver_to_zatca, process_invoice_submission
+from .qr import generate_qr_image_data_uri
 from .serializers import InvoiceSubmissionSerializer
 from .services import DuplicateReturnNumberError, create_return_credit_note
-from .xml_builder import _compute_totals
+from .xml_builder import VAT_RATE, _compute_totals
 
 
 class InvoiceFilterMixin:
@@ -141,6 +142,32 @@ class InvoiceExportView(LoginRequiredMixin, OrgScopedMixin, InvoiceFilterMixin, 
         return response
 
 
+class InvoiceDetailView(LoginRequiredMixin, OrgScopedMixin, DetailView):
+    model = InvoiceSubmission
+    pk_url_kwarg = "invoice_pk"
+    context_object_name = "invoice"
+    template_name = "invoices/invoice_detail.html"
+
+    def get_queryset(self):
+        # organization_id filter (not just OrgScopedMixin's ownership check
+        # on the URL's org pk) is what actually stops viewing another org's
+        # invoice by guessing invoice_pk.
+        return InvoiceSubmission.objects.filter(organization_id=self.kwargs["pk"]).select_related(
+            "organization", "device", "original_invoice",
+        )
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["organization"] = self.get_organization()
+        _attach_totals(self.object)
+        _attach_remarks(self.object)
+        context["line_items"] = _line_items(self.object)
+        context["qr_image"] = (
+            generate_qr_image_data_uri(self.object.qr_code_data) if self.object.qr_code_data else None
+        )
+        return context
+
+
 def _attach_totals(submission):
     items = submission.payload.get("items", [])
     if not items:
@@ -161,6 +188,29 @@ def _attach_totals(submission):
     submission.net_before_tax = totals["tax_exclusive"]
     submission.tax_amount = totals["vat_total"]
     submission.net_with_tax = totals["tax_inclusive"]
+
+
+def _line_items(submission):
+    line_items = []
+    for item in submission.payload.get("items", []):
+        qty = Decimal(str(item["qty"]))
+        price = Decimal(str(item["price"]))
+        line_amount = (qty * price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        line_vat = (line_amount * VAT_RATE if item["vat_type"] == "S" else Decimal("0")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        line_items.append({
+            "slno": item["slno"],
+            "code": item["code"],
+            "name": item["name"],
+            "qty": qty,
+            "price": price,
+            "vat_type": item["vat_type"],
+            "line_amount": line_amount,
+            "line_vat": line_vat,
+            "line_total": line_amount + line_vat,
+        })
+    return line_items
 
 
 def _sum_totals(submissions):

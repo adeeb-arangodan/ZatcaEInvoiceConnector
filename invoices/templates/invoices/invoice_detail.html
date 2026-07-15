@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invoice {{ invoice.payload.invoice_number }} - {{ organization.name }}</title>
+    <style>
+        table { border-collapse: collapse; width: 100%; margin-bottom: 16px; }
+        td, th { border: 1px solid #999; padding: 6px 8px; vertical-align: top; }
+        .totals-table { width: 40%; margin-left: auto; }
+        .no-border td, .no-border th { border: none; padding: 2px 0; }
+        @media print {
+            .no-print { display: none; }
+        }
+    </style>
+</head>
+<body>
+    {% if messages %}
+        {% for message in messages %}
+            <p style="color: {% if message.tags == 'error' %}red{% elif message.tags == 'warning' %}orange{% else %}green{% endif %};">
+                {{ message }}
+            </p>
+        {% endfor %}
+    {% endif %}
+
+    <p class="no-print">
+        <a href="{% url 'organization:invoice-list' organization.pk %}">Back to invoice list</a>
+        &nbsp;&nbsp;
+        <button onclick="window.print()">Print</button>
+    </p>
+
+    <h1>
+        {% if invoice.document_type == 'credit_note' %}
+            Credit Note
+        {% elif invoice.document_type == 'debit_note' %}
+            Debit Note
+        {% elif invoice.payload.invoice_type_code_name_attribute|slice:":1" == "0" %}
+            Simplified Tax Invoice
+        {% else %}
+            Tax Invoice
+        {% endif %}
+    </h1>
+
+    <table class="no-border">
+        <tr><th>Seller</th><td>{{ organization.name }} ({{ organization.branch_name }})</td></tr>
+        <tr><th>VAT Number</th><td>{{ organization.vat_number }}</td></tr>
+        <tr><th>CR Number</th><td>{{ organization.cr_number }}</td></tr>
+        <tr><th>Address</th><td>{{ organization.building_number }} {{ organization.street_name }}, {{ organization.city_sub_division }}, {{ organization.city_name }} {{ organization.postal_zone }}, {{ organization.country_code }}</td></tr>
+    </table>
+
+    <table class="no-border">
+        <tr><th>Invoice Number</th><td>{{ invoice.payload.invoice_number }}</td></tr>
+        <tr><th>Issue Date</th><td>{{ invoice.payload.issue_date }} {{ invoice.payload.issue_time }}</td></tr>
+        <tr><th>ICV</th><td>{{ invoice.icv|default:"-" }}</td></tr>
+        <tr><th>UUID</th><td>{{ invoice.invoice_uuid|default:"-" }}</td></tr>
+        <tr><th>ZATCA Status</th><td>{{ invoice.get_status_display }}</td></tr>
+        {% if invoice.payload.billing_reference %}
+            <tr><th>Billing Reference</th>
+                <td>
+                    {{ invoice.payload.billing_reference }}
+                    {% if invoice.original_invoice %}
+                        (<a href="{% url 'organization:invoice-detail' organization.pk invoice.original_invoice.pk %}">view original</a>)
+                    {% endif %}
+                </td>
+            </tr>
+        {% endif %}
+        {% if invoice.payload.reason %}
+            <tr><th>Reason</th><td>{{ invoice.payload.reason }}</td></tr>
+        {% endif %}
+    </table>
+
+    <h2>Bill To</h2>
+    <table class="no-border">
+        <tr><th>Customer</th><td>{{ invoice.payload.customer_name }}</td></tr>
+        {% if invoice.payload.customer_vat %}<tr><th>VAT Number</th><td>{{ invoice.payload.customer_vat }}</td></tr>{% endif %}
+        {% if invoice.payload.customer_id_number %}<tr><th>{{ invoice.payload.customer_id_type }}</th><td>{{ invoice.payload.customer_id_number }}</td></tr>{% endif %}
+        <tr><th>Address</th>
+            <td>
+                {{ invoice.payload.customer_building_number }} {{ invoice.payload.customer_street }},
+                {{ invoice.payload.customer_district }}, {{ invoice.payload.customer_city }}
+                {{ invoice.payload.customer_postal_zone }}, {{ invoice.payload.customer_country_code }}
+            </td>
+        </tr>
+    </table>
+
+    <h2>Items</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Item Code</th>
+                <th>Item</th>
+                <th>Qty</th>
+                <th>Unit Price</th>
+                <th>VAT %</th>
+                <th>Total (excl. VAT)</th>
+                <th>VAT Amount</th>
+                <th>Total (incl. VAT)</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in line_items %}
+                <tr>
+                    <td>{{ item.slno }}</td>
+                    <td>{{ item.code }}</td>
+                    <td>{{ item.name }}</td>
+                    <td>{{ item.qty }}</td>
+                    <td>{{ item.price }}</td>
+                    <td>{% if item.vat_type == "S" %}15%{% else %}0%{% endif %}</td>
+                    <td>{{ item.line_amount }}</td>
+                    <td>{{ item.line_vat }}</td>
+                    <td>{{ item.line_total }}</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <table class="totals-table no-border">
+        <tr><th>Subtotal</th><td>{{ invoice.total_amount|default:"-" }}</td></tr>
+        <tr><th>Discount</th><td>{{ invoice.discount_amount|default:"-" }}</td></tr>
+        <tr><th>Net before Tax</th><td>{{ invoice.net_before_tax|default:"-" }}</td></tr>
+        <tr><th>VAT Total</th><td>{{ invoice.tax_amount|default:"-" }}</td></tr>
+        <tr><th><strong>Total (incl. VAT)</strong></th><td><strong>{{ invoice.net_with_tax|default:"-" }}</strong></td></tr>
+    </table>
+
+    <h2>QR Code</h2>
+    {% if qr_image %}
+        <img src="{{ qr_image }}" alt="ZATCA QR code" width="200" height="200">
+    {% else %}
+        <p>Not yet available.</p>
+    {% endif %}
+</body>
+</html>
