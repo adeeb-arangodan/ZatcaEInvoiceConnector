@@ -42,7 +42,7 @@ CN = {common_name}
 organizationIdentifier = {organization.vat_number}
 
 [ req_ext ]
-certificateTemplateName = ASN1:PRINTABLESTRING:ZATCA-Code-Signing
+certificateTemplateName = ASN1:PRINTABLESTRING:{settings.ZATCA_CSR_CERT_TEMPLATE_NAME}
 subjectAltName = dirName:alt_names
 
 [ alt_names ]
@@ -303,24 +303,67 @@ def request_pcsid(csid):
         return {'status_code': None, 'error': {'message': str(exc)}}
 
 
+# ZATCA requires a device to pass a compliance check for every one of these 6
+# document-type combinations before it will issue a production CSID — the labels
+# match the step names ZATCA itself reports in a Missing-ComplianceSteps error.
+# The name_attribute is the KSA-2 invoice transaction code: a 9-character
+# NNPNESBCG string (BR-KSA-06) where NN is "01" (standard tax invoice) or "02"
+# (simplified) and the remaining 7 flag digits (3rd-party/nominal/exports/
+# summary/self-billed/continuous-supply/B2G) are 0 for a plain document.
+_COMPLIANCE_CHECK_SPECS = [
+    ('standard-compliant', '388', '010000000', False),
+    ('standard-credit-note-compliant', '381', '010000000', True),
+    ('standard-debit-note-compliant', '383', '010000000', True),
+    ('simplified-compliant', '388', '020000000', False),
+    ('simplified-credit-note-compliant', '381', '020000000', True),
+    ('simplified-debit-note-compliant', '383', '020000000', True),
+]
+
+
 def acquire_pcsid_for_device(device):
-    from invoices.xml_builder import build_compliance_sample_invoice
+    from invoices.xml_builder import build_compliance_sample_invoice, embed_qr_in_xml
+    from invoices.qr import generate_qr_tlv
     from invoices.signing import sign_invoice_xml
 
     csid = device.csid_response
     if not csid or 'binarySecurityToken' not in csid:
         raise ValueError("Device has no valid CSID. Cannot acquire PCSID.")
 
-    xml_bytes, sample_uuid, invoice_hash = build_compliance_sample_invoice(device)
-    signed_xml_bytes, _, _, _ = sign_invoice_xml(xml_bytes, device, invoice_hash)
-    encoded_invoice = encode_to_base64(signed_xml_bytes.decode('utf-8'))
+    failures = []
+    for label, invoice_type_code, name_attribute, needs_billing_reference in _COMPLIANCE_CHECK_SPECS:
+        billing_reference = 'COMP-SAMPLE-000' if needs_billing_reference else ''
+        reason = 'Compliance test document' if needs_billing_reference else ''
+        xml_bytes, sample_uuid, invoice_hash, fake_data = build_compliance_sample_invoice(
+            device,
+            invoice_type_code=invoice_type_code,
+            name_attribute=name_attribute,
+            billing_reference=billing_reference,
+            reason=reason,
+        )
+        signed_xml_bytes, signature_b64, public_key_b64, cert_signature_b64 = sign_invoice_xml(
+            xml_bytes, device, invoice_hash
+        )
+        issue_time = str(fake_data['issue_time'])[:8]
+        timestamp_str = f"{fake_data['issue_date']}T{issue_time}"
+        qr_code_data = generate_qr_tlv(
+            device.organization, fake_data, invoice_hash, signature_b64, public_key_b64,
+            timestamp_str, cert_signature_b64,
+        )
+        final_xml_bytes = embed_qr_in_xml(signed_xml_bytes, qr_code_data)
+        encoded_invoice = encode_to_base64(final_xml_bytes.decode('utf-8'))
 
-    request_compliance_invoice_check(
-        csid=csid,
-        invoice_hash=invoice_hash,
-        uuid=str(sample_uuid),
-        encoded_invoice=encoded_invoice,
-    )
+        result = request_compliance_invoice_check(
+            csid=csid,
+            invoice_hash=invoice_hash,
+            uuid=str(sample_uuid),
+            encoded_invoice=encoded_invoice,
+        )
+        if 'error' in result:
+            failures.append(f"{label}: {result['error']}")
+
+    if failures:
+        raise ValueError("Compliance checks failed for: " + "; ".join(failures))
+
     pcsid_result = request_pcsid(csid)
     device.pcsid = pcsid_result
     device.save(update_fields=['pcsid', 'updated_at'])

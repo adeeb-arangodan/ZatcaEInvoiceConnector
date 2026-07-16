@@ -40,13 +40,24 @@ ZATCA_SERVER_URL             # Default: https://gw-fatoora.zatca.gov.sa/e-invoic
 ZATCA_COMPLIANCE_API_ENDPOINT # Default: /compliance
 ZATCA_API_ACCEPT_VERSION     # Default: V2
 ZATCA_API_TIMEOUT_SECONDS    # Default: 30
-ZATCA_COMPLIANCE_INVOICE_CHECK_API_ENDPOINT # Default: /compliance/invoices/reporting/single
+ZATCA_COMPLIANCE_INVOICE_CHECK_API_ENDPOINT # Default: /compliance/invoices
 ZATCA_PRODUCTION_CSID_API_ENDPOINT          # Default: /production/csids
 ZATCA_REPORTING_API_ENDPOINT                # Default: /invoices/reporting/single
 ZATCA_CLEARANCE_API_ENDPOINT                # Default: /invoices/clearance/single
+ZATCA_CSR_CERT_TEMPLATE_NAME                # Default: ZATCA-Code-Signing (use PREZATCA-Code-Signing for the FATOORA Simulation portal)
 ```
 
 `openssl` must also be on PATH — used to generate EC keypairs and CSR documents for devices.
+
+**Testing against the FATOORA Simulation portal**: it's a fully independent environment
+from production, with its own onboarding/devices. Per the FATOORA Portal User Manual
+(`docs/guidelines-from-zatca/Fatoora_Portal_User_Manual_English.pdf`, section 3.B), set
+both of these together — the endpoint suffix settings (`ZATCA_COMPLIANCE_API_ENDPOINT`
+etc.) stay on their defaults, only the base URL and CSR template name change:
+```
+ZATCA_SERVER_URL=https://gw-fatoora.zatca.gov.sa/e-invoicing/simulation
+ZATCA_CSR_CERT_TEMPLATE_NAME=PREZATCA-Code-Signing
+```
 
 ## Architecture
 
@@ -118,7 +129,7 @@ POST /api/invoices/submit/                      Invoice submission API endpoint
 5. `signing.sign_invoice_xml()` — ECDSA-SHA256 signature over the hash, embedded as an XAdES block.
 6. `qr.generate_qr_tlv()` + `xml_builder.embed_qr_in_xml()` — TLV-encode the 8 ZATCA QR fields and patch them into the XML.
 7. Save `xml_document`/`invoice_hash`/`qr_code_data` onto the row.
-8. `submission.submit_to_zatca()` — POST to the reporting (simplified) or clearance (standard) endpoint, chosen by whether `invoice_type_code_name_attribute` starts with `0`.
+8. `submission.submit_to_zatca()` — POST to the reporting (simplified) or clearance (standard) endpoint, chosen by whether `invoice_type_code_name_attribute` (the KSA-2 invoice transaction code, BR-KSA-06) starts with `02` (simplified) vs `01` (standard) — both subtypes start with `0`, so the second digit is what actually distinguishes them.
 9. **If ZATCA accepts**: set `status=submitted`, save `zatca_response`/`submitted_at`, then `hashing.store_invoice_hash()` to advance `Organization.last_invoice_hash`. Return the `InvoiceSubmission`.
 10. **If ZATCA rejects** (or the call errors/times out): `transaction.set_rollback(True)` — undoes the ICV increment and the `InvoiceSubmission` row created in step 2, as if the attempt never happened. Outside the (now rolled-back) transaction, an `InvoiceSubmissionFailure` row is created instead (org, device, document_type, payload, ZATCA error), and `InvoiceSubmissionRejected(failure)` is raised to the caller. A retry — even seconds later — gets the exact same ICV, since nothing was consumed.
 

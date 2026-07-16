@@ -66,10 +66,19 @@ ZATCA_SERVER_URL=https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal
 ZATCA_COMPLIANCE_API_ENDPOINT=/compliance
 ZATCA_API_ACCEPT_VERSION=V2
 ZATCA_API_TIMEOUT_SECONDS=30
-ZATCA_COMPLIANCE_INVOICE_CHECK_API_ENDPOINT=/compliance/invoices/reporting/single
+ZATCA_COMPLIANCE_INVOICE_CHECK_API_ENDPOINT=/compliance/invoices
 ZATCA_PRODUCTION_CSID_API_ENDPOINT=/production/csids
 ZATCA_REPORTING_API_ENDPOINT=/invoices/reporting/single
 ZATCA_CLEARANCE_API_ENDPOINT=/invoices/clearance/single
+ZATCA_CSR_CERT_TEMPLATE_NAME=ZATCA-Code-Signing
+```
+
+To test against the FATOORA **Simulation** portal instead of production (it's a fully
+independent environment — its own onboarding, devices, and OTPs), set these two together
+and leave the other `ZATCA_*` endpoint suffixes on their defaults:
+```ini
+ZATCA_SERVER_URL=https://gw-fatoora.zatca.gov.sa/e-invoicing/simulation
+ZATCA_CSR_CERT_TEMPLATE_NAME=PREZATCA-Code-Signing
 ```
 
 Generate the two secrets:

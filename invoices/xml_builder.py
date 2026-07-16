@@ -331,7 +331,8 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
     return xml_bytes, invoice_uuid
 
 
-def build_compliance_sample_invoice(device):
+def build_compliance_sample_invoice(device, invoice_type_code='388', name_attribute='020000000',
+                                     billing_reference='', reason=''):
     from invoices.hashing import hash_invoice_xml
 
     organization = device.organization
@@ -339,8 +340,8 @@ def build_compliance_sample_invoice(device):
         'invoice_number': 'COMP-SAMPLE-001',
         'issue_date': '2024-01-01',
         'issue_time': '00:00:00',
-        'invoice_type_code': '388',
-        'invoice_type_code_name_attribute': '0100000',
+        'invoice_type_code': invoice_type_code,
+        'invoice_type_code_name_attribute': name_attribute,
         'notes': '',
         'customer_name': 'Compliance Test Customer',
         'customer_vat': '',
@@ -355,7 +356,8 @@ def build_compliance_sample_invoice(device):
         'doc_level_discount_vat': 0,
         'doc_level_discount_novat': 0,
         'advance_paid': 0,
-        'billing_reference': '',
+        'billing_reference': billing_reference,
+        'reason': reason,
         'items': [
             {
                 'slno': 1,
@@ -369,7 +371,7 @@ def build_compliance_sample_invoice(device):
     }
     xml_bytes, invoice_uuid = build_invoice_xml(fake_data, organization, device, 0, INITIAL_PIH)
     invoice_hash = hash_invoice_xml(xml_bytes)
-    return xml_bytes, invoice_uuid, invoice_hash
+    return xml_bytes, invoice_uuid, invoice_hash, fake_data
 
 
 def embed_qr_in_xml(xml_bytes, qr_b64):

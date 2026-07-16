@@ -9,6 +9,7 @@ from openpyxl import load_workbook
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec as ec_module
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -24,6 +25,8 @@ from .models import InvoiceSubmission, InvoiceSubmissionFailure
 from .pipeline import InvoiceSubmissionRejected, process_invoice_submission
 from .serializers import InvoiceSubmissionSerializer
 from .services import DuplicateReturnNumberError, create_return_credit_note
+from .submission import submit_to_zatca
+from .xml_builder import build_compliance_sample_invoice
 
 SUBMIT_URL = '/api/invoices/submit/'
 
@@ -33,7 +36,7 @@ VALID_PAYLOAD = {
     'issue_date': '2026-06-09',
     'issue_time': '10:00:00',
     'invoice_type_code': '388',
-    'invoice_type_code_name_attribute': '0100000',
+    'invoice_type_code_name_attribute': '020000000',
     'customer_name': 'Test Customer',
     'customer_vat': '300000000000003',
     'customer_city': 'Riyadh',
@@ -182,14 +185,14 @@ class InvoiceSubmitViewTests(TestCase):
 
     def test_credit_note_without_billing_reference_returns_400(self):
         org, _ = self._make_org_with_device()
-        payload = {**VALID_PAYLOAD, 'invoice_type_code': '381', 'invoice_type_code_name_attribute': '0100000'}
+        payload = {**VALID_PAYLOAD, 'invoice_type_code': '381', 'invoice_type_code_name_attribute': '020000000'}
         response = self._post(payload, org)
         self.assertEqual(response.status_code, 400)
         self.assertIn('billing_reference', response.json())
 
     def test_debit_note_without_billing_reference_returns_400(self):
         org, _ = self._make_org_with_device()
-        payload = {**VALID_PAYLOAD, 'invoice_type_code': '383', 'invoice_type_code_name_attribute': '0100000'}
+        payload = {**VALID_PAYLOAD, 'invoice_type_code': '383', 'invoice_type_code_name_attribute': '020000000'}
         response = self._post(payload, org)
         self.assertEqual(response.status_code, 400)
         self.assertIn('billing_reference', response.json())
@@ -199,7 +202,7 @@ class InvoiceSubmitViewTests(TestCase):
         payload = {
             **VALID_PAYLOAD,
             'invoice_type_code': '381',
-            'invoice_type_code_name_attribute': '0100000',
+            'invoice_type_code_name_attribute': '020000000',
             'billing_reference': 'INV-001',
         }
         response = self._post(payload, org)
@@ -333,7 +336,7 @@ class InvoiceSubmitViewTests(TestCase):
         payload = {
             **VALID_PAYLOAD,
             'invoice_type_code': '381',
-            'invoice_type_code_name_attribute': '0100000',
+            'invoice_type_code_name_attribute': '020000000',
             'billing_reference': 'INV-001',
             'reason': 'Goods returned',
         }
@@ -550,6 +553,110 @@ class InvoicePipelineTests(TestCase):
         self.assertEqual(org.last_invoice_hash, '')
         self.assertEqual(InvoiceSubmission.objects.count(), 0)
         mock_submit.assert_not_called()
+
+
+class ComplianceSampleInvoiceTests(TestCase):
+    def _make_device(self):
+        org = Organization.objects.create(**ORG_DEFAULTS)
+        device = Device.objects.create(
+            organization=org,
+            asset_id='ASSET-100',
+            egs_sw_serial_number='SERIAL-200',
+            otp='123456',
+            csid_response=FAKE_CSID,
+        )
+        return device
+
+    def test_build_compliance_sample_invoice_uses_given_type_and_billing_fields(self):
+        device = self._make_device()
+
+        xml_bytes, invoice_uuid, invoice_hash, fake_data = build_compliance_sample_invoice(
+            device,
+            invoice_type_code='381',
+            name_attribute='010000000',
+            billing_reference='REF-1',
+            reason='why',
+        )
+
+        xml_text = xml_bytes.decode('utf-8')
+        self.assertIn('<cbc:InvoiceTypeCode name="010000000">381</cbc:InvoiceTypeCode>', xml_text)
+        self.assertIn('<cbc:ID>REF-1</cbc:ID>', xml_text)
+        self.assertIn('<cbc:InstructionNote>why</cbc:InstructionNote>', xml_text)
+        self.assertIsNotNone(invoice_uuid)
+        self.assertTrue(invoice_hash)
+        self.assertEqual(fake_data['invoice_type_code'], '381')
+        self.assertEqual(fake_data['billing_reference'], 'REF-1')
+
+    def test_build_compliance_sample_invoice_defaults_to_simplified_invoice(self):
+        device = self._make_device()
+
+        xml_bytes, _, _, _ = build_compliance_sample_invoice(device)
+
+        xml_text = xml_bytes.decode('utf-8')
+        self.assertIn('<cbc:InvoiceTypeCode name="020000000">388</cbc:InvoiceTypeCode>', xml_text)
+        self.assertNotIn('<cac:BillingReference>', xml_text)
+
+
+class SubmitToZatcaRoutingTests(TestCase):
+    """Confirms KSA-2 routing: '02...' -> reporting (simplified), '01...' -> clearance
+    (standard). Both subtypes start with '0', so this guards against regressing to a
+    startswith('0') check that would route every invoice to reporting."""
+
+    def _make_device(self):
+        org = Organization.objects.create(**ORG_DEFAULTS)
+        return Device.objects.create(
+            organization=org,
+            asset_id='ASSET-100',
+            egs_sw_serial_number='SERIAL-200',
+            otp='123456',
+            csid_response=FAKE_CSID,
+        )
+
+    def _post_and_capture_url(self, device, name_attribute):
+        captured = {}
+
+        class DummyRequests:
+            class HTTPError(Exception):
+                pass
+
+            class RequestException(Exception):
+                pass
+
+            @staticmethod
+            def post(url, headers, json, timeout):
+                captured['url'] = url
+
+                class DummyResponse:
+                    status_code = 200
+
+                    @staticmethod
+                    def raise_for_status():
+                        return None
+
+                    @staticmethod
+                    def json():
+                        return {}
+
+                return DummyResponse()
+
+        with patch('invoices.submission._get_requests_module', return_value=DummyRequests):
+            submit_to_zatca(device, 'HASH', str(uuid.uuid4()), 'ENCODED', name_attribute)
+
+        return captured['url']
+
+    def test_simplified_code_routes_to_reporting_endpoint(self):
+        device = self._make_device()
+
+        url = self._post_and_capture_url(device, '020000000')
+
+        self.assertTrue(url.endswith(settings.ZATCA_REPORTING_API_ENDPOINT))
+
+    def test_standard_code_routes_to_clearance_endpoint(self):
+        device = self._make_device()
+
+        url = self._post_and_capture_url(device, '010000000')
+
+        self.assertTrue(url.endswith(settings.ZATCA_CLEARANCE_API_ENDPOINT))
 
 
 class SubmissionRejectionCallSiteTests(TestCase):
@@ -1493,7 +1600,7 @@ class InvoiceDetailViewTests(TestCase):
             'invoice_number': f'INV-{icv:03d}',
             'issue_date': '2026-07-14',
             'issue_time': '10:00:00',
-            'invoice_type_code_name_attribute': '0100000',
+            'invoice_type_code_name_attribute': '020000000',
             'customer_name': 'Test Customer',
             'customer_vat': '300000000000003',
             'customer_city': 'Riyadh',
