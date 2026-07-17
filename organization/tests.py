@@ -1,11 +1,14 @@
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec as ec_module
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from unittest.mock import patch
 
 from .models import Device, DeviceKeyMaterial, Organization
 from .services import (
     _build_zatca_csr_config,
+    acquire_pcsid_for_device,
     decrypt_private_key,
     encrypt_private_key,
     ensure_device_keys,
@@ -235,6 +238,7 @@ class OrganizationCrudTests(TestCase):
         self.assertRedirects(response, reverse("organization:dashboard", args=[organization.pk]))
         self.assertFalse(Device.objects.filter(pk=device.pk).exists())
 
+    @override_settings(ZATCA_CSR_CERT_TEMPLATE_NAME="ZATCA-Code-Signing")
     def test_build_zatca_csr_config_uses_device_and_organization_fields(self):
         organization = Organization.objects.create(
             name="Safa Makkah Polyclinic Company",
@@ -268,6 +272,35 @@ class OrganizationCrudTests(TestCase):
         self.assertIn("UID = 399999999900003", config)
         self.assertIn("title = 1100", config)
         self.assertIn("businessCategory = Healthcare", config)
+        self.assertIn("certificateTemplateName = ASN1:PRINTABLESTRING:ZATCA-Code-Signing", config)
+
+    @override_settings(ZATCA_CSR_CERT_TEMPLATE_NAME="PREZATCA-Code-Signing")
+    def test_build_zatca_csr_config_uses_simulation_cert_template_when_configured(self):
+        organization = Organization.objects.create(
+            name="Safa Makkah Polyclinic Company",
+            branch_name="Branch-2",
+            industry_category="Healthcare",
+            vat_number="399999999900003",
+            country_code="SA",
+            national_address_code="RCFA3435",
+            street_name="Al Baraqiyah",
+            building_number="3435",
+            city_sub_division="Al Futah Dist",
+            city_name="Riyadh",
+            postal_zone="12632",
+            cr_number="1010138184",
+            invoice_category="1100",
+        )
+        device = Device(
+            organization=organization,
+            asset_id="ASSET-100",
+            egs_sw_serial_number="SERIAL-200",
+            otp="123456",
+        )
+
+        config = _build_zatca_csr_config(device)
+
+        self.assertIn("certificateTemplateName = ASN1:PRINTABLESTRING:PREZATCA-Code-Signing", config)
 
     def test_ensure_device_keys_creates_keys_once_per_device(self):
         organization = Organization.objects.create(
@@ -337,6 +370,7 @@ class OrganizationCrudTests(TestCase):
 
         self.assertEqual(encoded_value, "Q1NSLUNPTlRFTlQ=")
 
+    @override_settings(ZATCA_SERVER_URL="https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal")
     def test_request_compliance_csid_posts_base64_csr_to_sandbox_endpoint(self):
         captured = {}
 
@@ -452,6 +486,116 @@ class OrganizationCrudTests(TestCase):
 
         mock_request_compliance_csid.assert_called_once_with("CSR-CONTENT", "123456")
         self.assertEqual(response_payload["binarySecurityToken"], "token")
+
+    # Real (self-signed, secp256k1) test certificate so signing.py's x509 parsing
+    # succeeds the same way it would for a real CSID.
+    _FAKE_CSID = {
+        "binarySecurityToken": (
+            "TUlJQkJqQ0JycUFEQWdFQ0FnRUJNQW9HQ0NxR1NNNDlCQU1DTUE4eERUQUxCZ05WQkFNTUJGUkZVMVF3"
+            "SGhjTk1qUXdNVEF4TURBd01EQXdXaGNOTXpBd01UQXhNREF3TURBd1dqQVBNUTB3Q3dZRFZRUUREQVJV"
+            "UlZOVU1GWXdFQVlIS29aSXpqMENBUVlGSzRFRUFBb0RRZ0FFNEpZSUluT1BaQWQ3eDlKZnFHZVVnVjNN"
+            "Y2VDcTVQVW1HNndiL2Q0MkQ0MzZxSlRoRWMvQStZVFk5Z3E3OTJJWWI4QVczcWw3dkVuWllmaUZJVzFt"
+            "N2pBS0JnZ3Foa2pPUFFRREFnTkhBREJFQWlCYzI4eWJDK3JNWjlMV3RZZ01KUjBENk9yd3pTU2V4ZzlT"
+            "TnhPWEpOakN6QUlnVm1qZGk3MWxTYzdtV25CZHllZ0dzQTJWZW1ENWxRS0xFQkNaeStKdi81cz0="
+        ),
+        "secret": "testsecret",
+        "requestID": "REQ-001",
+    }
+
+    def _make_device_with_signing_key(self):
+        organization = Organization.objects.create(**{
+            "name": "Safa Makkah Polyclinic Company",
+            "branch_name": "Branch-2",
+            "industry_category": "Healthcare",
+            "vat_number": "399999999900003",
+            "country_code": "SA",
+            "national_address_code": "RCFA3435",
+            "street_name": "Al Baraqiyah",
+            "building_number": "3435",
+            "city_sub_division": "Al Futah Dist",
+            "city_name": "Riyadh",
+            "postal_zone": "12632",
+            "cr_number": "1010138184",
+            "invoice_category": "1100",
+        })
+        device = Device.objects.create(
+            organization=organization,
+            asset_id="ASSET-100",
+            egs_sw_serial_number="SERIAL-200",
+            otp="123456",
+            csid_response=self._FAKE_CSID,
+        )
+        private_key = ec_module.generate_private_key(ec_module.SECP256R1())
+        pem = private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode("ascii")
+        DeviceKeyMaterial.objects.create(device=device, private_key_pem=encrypt_private_key(pem))
+        return device
+
+    def test_acquire_pcsid_runs_all_six_compliance_checks_before_requesting_pcsid(self):
+        device = self._make_device_with_signing_key()
+        captured_urls = []
+
+        class DummyRequests:
+            class HTTPError(Exception):
+                pass
+
+            class RequestException(Exception):
+                pass
+
+            @staticmethod
+            def post(url, headers, json, timeout):
+                captured_urls.append(url)
+
+                class DummyResponse:
+                    status_code = 200
+
+                    @staticmethod
+                    def raise_for_status():
+                        return None
+
+                    @staticmethod
+                    def json():
+                        if url.endswith("/production/csids"):
+                            return {"binarySecurityToken": "pcsid-token", "secret": "pcsid-secret"}
+                        return {"validationResults": {"status": "PASS"}}
+
+                return DummyResponse()
+
+        with patch("organization.services._get_requests_module", return_value=DummyRequests):
+            pcsid_result = acquire_pcsid_for_device(device)
+
+        compliance_calls = [u for u in captured_urls if u.endswith("/compliance/invoices")]
+        pcsid_calls = [u for u in captured_urls if u.endswith("/production/csids")]
+        self.assertEqual(len(compliance_calls), 6)
+        self.assertEqual(len(pcsid_calls), 1)
+        self.assertEqual(pcsid_result["binarySecurityToken"], "pcsid-token")
+        device.refresh_from_db()
+        self.assertEqual(device.pcsid["binarySecurityToken"], "pcsid-token")
+
+    def test_acquire_pcsid_raises_and_skips_pcsid_request_when_a_compliance_check_fails(self):
+        device = self._make_device_with_signing_key()
+        call_count = {"n": 0}
+
+        def fake_request_compliance_invoice_check(csid, invoice_hash, uuid, encoded_invoice):
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                return {"status_code": 400, "error": {"message": "standard-credit-note-compliant failed"}}
+            return {"validationResults": {"status": "PASS"}}
+
+        with patch(
+            "organization.services.request_compliance_invoice_check",
+            side_effect=fake_request_compliance_invoice_check,
+        ), patch("organization.services.request_pcsid") as mock_request_pcsid:
+            with self.assertRaises(ValueError) as ctx:
+                acquire_pcsid_for_device(device)
+
+        self.assertIn("standard-credit-note-compliant", str(ctx.exception))
+        mock_request_pcsid.assert_not_called()
+        device.refresh_from_db()
+        self.assertIsNone(device.pcsid)
 
 
 class LandingPageTests(TestCase):

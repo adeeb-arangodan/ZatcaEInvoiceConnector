@@ -12,7 +12,11 @@ def submit_to_zatca(device, invoice_hash, invoice_uuid, encoded_invoice, invoice
     if not credential or 'binarySecurityToken' not in credential:
         return {'status_code': None, 'error': {'message': 'Device has no valid credential (CSID/PCSID).'}}
 
-    is_simplified = invoice_type_code_name_attribute.startswith('0')
+    # KSA-2 (BR-KSA-06): the invoice transaction code's first 2 digits are the
+    # invoice subtype — "01" = standard (clearance required before issuance),
+    # "02" = simplified (reported within 24h after issuance). Both subtypes
+    # start with "0", so only the 2-digit prefix reliably distinguishes them.
+    is_simplified = invoice_type_code_name_attribute.startswith('02')
     endpoint = (
         settings.ZATCA_REPORTING_API_ENDPOINT
         if is_simplified
