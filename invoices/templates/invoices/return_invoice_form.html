@@ -3,12 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Return Invoice {{ invoice.payload.invoice_number }}</title>
+    <title>Full Return - Invoice {{ invoice.payload.invoice_number }}</title>
 </head>
 <body>
-    <h1>Return Invoice {{ invoice.payload.invoice_number }}</h1>
+    <h1>Full Return - Invoice {{ invoice.payload.invoice_number }}</h1>
     <p>Customer: {{ invoice.payload.customer_name }}</p>
-    <p>This will create a full credit note against this invoice and submit it to ZATCA.</p>
+    <p>
+        This will create a full credit note reversing every item on this invoice,
+        dated {{ invoice.payload.issue_date }} — the same date as the original
+        invoice — and submit it to ZATCA. To return only some items, a partial
+        amount, or use a different date, go back and use
+        <a href="{% url 'organization:invoice-return-custom' organization.pk invoice.pk %}">Custom Return</a> instead.
+    </p>
 
     <form method="post">
         {% csrf_token %}

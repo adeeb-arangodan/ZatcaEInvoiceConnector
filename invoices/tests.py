@@ -1,5 +1,6 @@
 import json
 import uuid
+from datetime import date
 from decimal import Decimal
 from io import BytesIO
 from unittest.mock import MagicMock, patch
@@ -24,7 +25,11 @@ from .hashing import INITIAL_PIH, get_icv_and_pih_atomically, store_invoice_hash
 from .models import InvoiceSubmission, InvoiceSubmissionFailure
 from .pipeline import InvoiceSubmissionRejected, process_invoice_submission
 from .serializers import InvoiceSubmissionSerializer
-from .services import DuplicateReturnNumberError, create_return_credit_note
+from .services import (
+    DuplicateReturnNumberError,
+    create_custom_return_credit_note,
+    create_return_credit_note,
+)
 from .submission import submit_to_zatca
 from .xml_builder import build_compliance_sample_invoice
 
@@ -961,6 +966,189 @@ class ReturnInvoiceFlowTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            InvoiceSubmission.objects.filter(document_type=InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE).count(), 0,
+        )
+
+
+@override_settings(DEVICE_KEY_ENCRYPTION_KEY=Fernet.generate_key().decode())
+class CustomReturnInvoiceFlowTests(TestCase):
+    """Exercises the custom (partial) return flow: excluding items, editing
+    qty/price, and defaulting/overriding the issue date."""
+
+    TWO_ITEM_PAYLOAD = {
+        **VALID_PAYLOAD,
+        'items': [
+            {'slno': 1, 'code': 'ITEM-001', 'name': 'Consultation', 'qty': '1.0000',
+             'price': '100.0000', 'vat_type': 'S'},
+            {'slno': 2, 'code': 'ITEM-002', 'name': 'Medicine', 'qty': '2.0000',
+             'price': '50.0000', 'vat_type': 'S'},
+        ],
+    }
+
+    def _make_org_with_signing_device(self, email='owner@example.com', **org_overrides):
+        defaults = {**ORG_DEFAULTS}
+        defaults.update(org_overrides)
+        user = User.objects.create_user(username=email, email=email, password='testpass123')
+        org = Organization.objects.create(email=email, owner_user=user, **defaults)
+        device = Device.objects.create(
+            organization=org,
+            asset_id='ASSET-100',
+            egs_sw_serial_number='SERIAL-200',
+            otp='123456',
+            csid_response=FAKE_CSID,
+        )
+        private_key = ec_module.generate_private_key(ec_module.SECP256R1())
+        pem = private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode('ascii')
+        DeviceKeyMaterial.objects.create(device=device, private_key_pem=encrypt_private_key(pem))
+        return org, device, user
+
+    def _validated(self, payload, org):
+        serializer = InvoiceSubmissionSerializer(data=payload, organization=org)
+        serializer.is_valid(raise_exception=True)
+        return serializer.validated_data, serializer.get_resolved_device()
+
+    def _formset_post_data(self, include_second=False):
+        data = {
+            'form-TOTAL_FORMS': '2',
+            'form-INITIAL_FORMS': '2',
+            'form-MIN_NUM_FORMS': '0',
+            'form-MAX_NUM_FORMS': '1000',
+            'form-0-slno': '1', 'form-0-code': 'ITEM-001', 'form-0-name': 'Consultation',
+            'form-0-vat_type': 'S', 'form-0-include': 'on', 'form-0-qty': '1.0000', 'form-0-price': '100.0000',
+            'form-1-slno': '2', 'form-1-code': 'ITEM-002', 'form-1-name': 'Medicine',
+            'form-1-vat_type': 'S', 'form-1-qty': '2.0000', 'form-1-price': '50.0000',
+            'issue_date': '2026-07-20',
+            'system_return_number': '',
+            'reason': 'partial return',
+        }
+        if include_second:
+            data['form-1-include'] = 'on'
+        return data
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_excluding_an_item_leaves_it_out_of_the_credit_note(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, _user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.TWO_ITEM_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        credit_note = create_custom_return_credit_note(
+            org, device, invoice,
+            items=[invoice.payload['items'][0]],
+            issue_date=date(2026, 7, 20),
+            reason='partial return',
+        )
+
+        self.assertEqual(len(credit_note.payload['items']), 1)
+        self.assertEqual(credit_note.payload['items'][0]['code'], 'ITEM-001')
+        self.assertEqual(credit_note.payload['issue_date'], '2026-07-20')
+        self.assertNotEqual(credit_note.payload['issue_date'], invoice.payload['issue_date'])
+        self.assertEqual(credit_note.document_type, InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE)
+        self.assertEqual(credit_note.original_invoice_id, invoice.pk)
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_edited_qty_and_price_flow_through_to_the_credit_note(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, _user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.TWO_ITEM_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        edited_item = {**invoice.payload['items'][0], 'qty': '1.0000', 'price': '40.0000'}
+        credit_note = create_custom_return_credit_note(
+            org, device, invoice, items=[edited_item], issue_date=date(2026, 7, 20), reason='partial refund',
+        )
+
+        self.assertEqual(credit_note.payload['items'][0]['price'], '40.0000')
+        self.assertNotEqual(credit_note.payload['items'][0]['price'], invoice.payload['items'][0]['price'])
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_duplicate_system_return_number_raises(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, _user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.TWO_ITEM_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+        create_custom_return_credit_note(
+            org, device, invoice, items=[invoice.payload['items'][0]], issue_date=date(2026, 7, 20),
+            system_return_number='SYS-CUSTOM-1',
+        )
+
+        with self.assertRaises(DuplicateReturnNumberError):
+            create_custom_return_credit_note(
+                org, device, invoice, items=[invoice.payload['items'][0]], issue_date=date(2026, 7, 20),
+                system_return_number='SYS-CUSTOM-1',
+            )
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_view_get_defaults_issue_date_to_today(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.TWO_ITEM_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        self.client.force_login(user)
+        response = self.client.get(reverse('organization:invoice-return-custom', args=[org.pk, invoice.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['form'].initial['issue_date'], timezone.localdate())
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_view_post_creates_partial_credit_note_with_custom_date(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.TWO_ITEM_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        self.client.force_login(user)
+        response = self.client.post(
+            reverse('organization:invoice-return-custom', args=[org.pk, invoice.pk]),
+            self._formset_post_data(include_second=False),
+        )
+
+        self.assertRedirects(response, reverse('organization:invoice-list', args=[org.pk]))
+        credit_note = InvoiceSubmission.objects.get(document_type=InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE)
+        self.assertEqual(len(credit_note.payload['items']), 1)
+        self.assertEqual(credit_note.payload['items'][0]['code'], 'ITEM-001')
+        self.assertEqual(credit_note.payload['issue_date'], '2026-07-20')
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_view_post_with_no_items_selected_shows_error_and_creates_nothing(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.TWO_ITEM_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        self.client.force_login(user)
+        post_data = self._formset_post_data(include_second=False)
+        del post_data['form-0-include']
+        response = self.client.post(
+            reverse('organization:invoice-return-custom', args=[org.pk, invoice.pk]), post_data,
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(
+            InvoiceSubmission.objects.filter(document_type=InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE).count(), 0,
+        )
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_view_zatca_rejection_shows_message_and_creates_no_row(self, mock_submit):
+        org, device, user = self._make_org_with_signing_device()
+        mock_submit.return_value = {'status_code': 200}
+        validated_data, resolved_device = self._validated(self.TWO_ITEM_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        mock_submit.return_value = {'status_code': 422, 'error': {'message': 'invalid'}}
+        self.client.force_login(user)
+        response = self.client.post(
+            reverse('organization:invoice-return-custom', args=[org.pk, invoice.pk]),
+            self._formset_post_data(include_second=False),
+        )
+
+        self.assertRedirects(response, reverse('organization:invoice-list', args=[org.pk]))
         self.assertEqual(
             InvoiceSubmission.objects.filter(document_type=InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE).count(), 0,
         )

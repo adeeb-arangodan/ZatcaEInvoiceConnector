@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Custom Return - Invoice {{ invoice.payload.invoice_number }}</title>
+    <style>
+        table { border-collapse: collapse; width: 100%; margin-bottom: 16px; }
+        td, th { border: 1px solid #999; padding: 6px 8px; vertical-align: top; }
+        input[type="number"], input[type="text"] { width: 100px; }
+    </style>
+</head>
+<body>
+    <h1>Custom Return - Invoice {{ invoice.payload.invoice_number }}</h1>
+    <p>Customer: {{ invoice.payload.customer_name }}</p>
+    <p>
+        Uncheck any item you are not returning, and adjust the quantity/unit price
+        of the item(s) you are returning. VAT and totals are calculated
+        automatically from what you submit here.
+    </p>
+
+    {% if form.non_field_errors %}
+        <p style="color: red;">{{ form.non_field_errors }}</p>
+    {% endif %}
+    {% if formset.non_form_errors %}
+        <p style="color: red;">{{ formset.non_form_errors }}</p>
+    {% endif %}
+
+    <form method="post">
+        {% csrf_token %}
+        {{ formset.management_form }}
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Include</th>
+                    <th>Item Code</th>
+                    <th>Item</th>
+                    <th>Qty</th>
+                    <th>Unit Price</th>
+                    <th>VAT %</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item_form in formset %}
+                    <tr>
+                        <td>
+                            {{ item_form.include }}
+                            {{ item_form.slno }}
+                            {{ item_form.code }}
+                            {{ item_form.name }}
+                            {{ item_form.vat_type }}
+                        </td>
+                        <td>{{ item_form.initial.code }}</td>
+                        <td>{{ item_form.initial.name }}</td>
+                        <td>{{ item_form.qty }}{{ item_form.qty.errors }}</td>
+                        <td>{{ item_form.price }}{{ item_form.price.errors }}</td>
+                        <td>{% if item_form.initial.vat_type == "S" %}15%{% else %}0%{% endif %}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <p>
+            <label>Issue Date (defaults to today)
+                {{ form.issue_date }}{{ form.issue_date.errors }}
+            </label>
+        </p>
+        <p>
+            <label>{{ form.system_return_number.label }}
+                {{ form.system_return_number }}{{ form.system_return_number.errors }}
+            </label>
+        </p>
+        <p>
+            <label>{{ form.reason.label }}<br>
+                {{ form.reason }}{{ form.reason.errors }}
+            </label>
+        </p>
+
+        <button type="submit">Create Custom Credit Note</button>
+    </form>
+
+    <p><a href="{% url 'organization:invoice-list' organization.pk %}">Cancel</a></p>
+</body>
+</html>

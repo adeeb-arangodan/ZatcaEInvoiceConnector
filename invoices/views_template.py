@@ -5,7 +5,7 @@ from django import forms
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.http import HttpResponse
-from django.shortcuts import get_object_or_404, redirect
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.text import slugify
@@ -19,7 +19,11 @@ from .models import InvoiceSubmission, InvoiceSubmissionFailure
 from .pipeline import InvoiceSubmissionRejected, deliver_to_zatca, process_invoice_submission
 from .qr import generate_qr_image_data_uri
 from .serializers import InvoiceSubmissionSerializer
-from .services import DuplicateReturnNumberError, create_return_credit_note
+from .services import (
+    DuplicateReturnNumberError,
+    create_custom_return_credit_note,
+    create_return_credit_note,
+)
 from .xml_builder import VAT_RATE, _compute_totals
 
 
@@ -291,6 +295,126 @@ class ReturnInvoiceFormView(LoginRequiredMixin, OrgScopedMixin, FormView):
 
         messages.success(
             self.request, f"Credit note created and submitted to ZATCA (ICV {credit_note.icv})."
+        )
+        return redirect("organization:invoice-list", pk=organization.pk)
+
+
+class CustomReturnItemForm(forms.Form):
+    slno = forms.IntegerField(widget=forms.HiddenInput)
+    code = forms.CharField(widget=forms.HiddenInput)
+    name = forms.CharField(widget=forms.HiddenInput)
+    vat_type = forms.CharField(widget=forms.HiddenInput)
+    include = forms.BooleanField(required=False, initial=True, label="Include")
+    qty = forms.DecimalField(max_digits=15, decimal_places=4, label="Qty")
+    price = forms.DecimalField(max_digits=15, decimal_places=4, label="Unit Price")
+
+
+CustomReturnItemFormSet = forms.formset_factory(CustomReturnItemForm, extra=0)
+
+
+class CustomReturnInvoiceForm(forms.Form):
+    issue_date = forms.DateField(widget=forms.DateInput(attrs={"type": "date"}))
+    system_return_number = forms.CharField(required=False, label="System return number (optional)")
+    reason = forms.CharField(required=False, widget=forms.Textarea, label="Reason (optional)")
+
+
+class CustomReturnInvoiceFormView(LoginRequiredMixin, OrgScopedMixin, View):
+    template_name = "invoices/return_invoice_custom_form.html"
+
+    def dispatch(self, request, *args, **kwargs):
+        self.invoice = get_object_or_404(
+            InvoiceSubmission,
+            pk=self.kwargs["invoice_pk"],
+            organization_id=self.kwargs["pk"],
+            document_type=InvoiceSubmission.DOCUMENT_TYPE_INVOICE,
+        )
+        return super().dispatch(request, *args, **kwargs)
+
+    def _initial_items(self):
+        return [
+            {
+                "slno": item["slno"],
+                "code": item["code"],
+                "name": item["name"],
+                "vat_type": item["vat_type"],
+                "include": True,
+                "qty": item["qty"],
+                "price": item["price"],
+            }
+            for item in self.invoice.payload.get("items", [])
+        ]
+
+    def _render(self, request, form, formset, status=200):
+        return render(
+            request,
+            self.template_name,
+            {
+                "organization": self.get_organization(),
+                "invoice": self.invoice,
+                "form": form,
+                "formset": formset,
+            },
+            status=status,
+        )
+
+    def get(self, request, *args, **kwargs):
+        form = CustomReturnInvoiceForm(initial={"issue_date": timezone.localdate()})
+        formset = CustomReturnItemFormSet(initial=self._initial_items())
+        return self._render(request, form, formset)
+
+    def post(self, request, *args, **kwargs):
+        organization = self.get_organization()
+        form = CustomReturnInvoiceForm(request.POST)
+        formset = CustomReturnItemFormSet(request.POST, initial=self._initial_items())
+
+        if not (form.is_valid() and formset.is_valid()):
+            return self._render(request, form, formset, status=422)
+
+        selected_items = [
+            {
+                "slno": cleaned["slno"],
+                "code": cleaned["code"],
+                "name": cleaned["name"],
+                "vat_type": cleaned["vat_type"],
+                "qty": str(cleaned["qty"]),
+                "price": str(cleaned["price"]),
+                "VatExceptionReason": "",
+            }
+            for cleaned in formset.cleaned_data
+            if cleaned.get("include")
+        ]
+        if not selected_items:
+            form.add_error(None, "Select at least one item to return.")
+            return self._render(request, form, formset, status=422)
+
+        device = self.invoice.device
+        if not device.csid_response or "binarySecurityToken" not in device.csid_response:
+            messages.error(request, "Originating device has no valid compliance CSID.")
+            return redirect("organization:invoice-list", pk=organization.pk)
+
+        try:
+            credit_note = create_custom_return_credit_note(
+                organization=organization,
+                device=device,
+                original_invoice=self.invoice,
+                items=selected_items,
+                issue_date=form.cleaned_data["issue_date"],
+                system_return_number=form.cleaned_data["system_return_number"],
+                reason=form.cleaned_data["reason"],
+            )
+        except DuplicateReturnNumberError as exc:
+            form.add_error("system_return_number", str(exc))
+            return self._render(request, form, formset, status=422)
+        except InvoiceSubmissionRejected as exc:
+            messages.error(
+                request,
+                f"ZATCA rejected this credit note: {exc.failure.zatca_response}. "
+                "Correct the payload and resubmit from Failed Submissions.",
+            )
+            return redirect("organization:invoice-list", pk=organization.pk)
+
+        messages.success(
+            request, f"Custom credit note created and submitted to ZATCA (ICV {credit_note.icv})."
         )
         return redirect("organization:invoice-list", pk=organization.pk)
 
