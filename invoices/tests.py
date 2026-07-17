@@ -1707,6 +1707,27 @@ class InvoiceListViewTests(TestCase):
         self.assertEqual(response.context['summary_scope'], 'page')
         self.assertEqual(response.context['summary']['count'], 25)
 
+    def test_summary_nets_credit_notes_and_adds_debit_notes(self):
+        org, device, user = self._make_org_with_device()
+        self._make_submission_with_items(org, device, 1)
+        self._make_submission_with_items(org, device, 2)
+        self._make_submission_with_items(
+            org, device, 3, document_type=InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE,
+        )
+        self._make_submission_with_items(
+            org, device, 4, document_type=InvoiceSubmission.DOCUMENT_TYPE_DEBIT_NOTE,
+            items=[{'slno': 1, 'code': 'ITEM-001', 'name': 'Widget', 'qty': '1', 'price': '50', 'vat_type': 'S'}],
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-list', args=[org.pk]))
+
+        # count stays a plain row count (unnetted); the monetary total nets
+        # the two invoices (100 each) plus the debit note (50) minus the
+        # credit note (100): 100 + 100 + 50 - 100 = 150.
+        self.assertEqual(response.context['summary']['count'], 4)
+        self.assertEqual(response.context['summary']['total_amount'], Decimal('150.00'))
+
     def test_export_returns_filtered_rows_and_summary(self):
         org, device, user = self._make_org_with_device()
         self._make_submission_with_items(org, device, 1, issue_date='2026-06-24')

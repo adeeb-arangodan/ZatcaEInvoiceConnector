@@ -217,16 +217,30 @@ def _line_items(submission):
     return line_items
 
 
+# Per-row totals are always positive (matching the UBL/ZATCA XML convention —
+# a credit note's "credit" nature is conveyed by its document type code, not
+# a negative amount). The summary is a business-reporting aggregate, not part
+# of ZATCA compliance, so it nets credit notes against invoices/debit notes
+# the way a sales ledger would: invoices + debit notes (charges) - credit
+# notes (returns).
+_DOCUMENT_TYPE_SUMMARY_SIGN = {
+    InvoiceSubmission.DOCUMENT_TYPE_INVOICE: 1,
+    InvoiceSubmission.DOCUMENT_TYPE_DEBIT_NOTE: 1,
+    InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE: -1,
+}
+
+
 def _sum_totals(submissions):
     fields = ["total_amount", "discount_amount", "net_before_tax", "tax_amount", "net_with_tax"]
     sums = {field: Decimal("0") for field in fields}
     count = 0
     for submission in submissions:
         count += 1
+        sign = _DOCUMENT_TYPE_SUMMARY_SIGN.get(submission.document_type, 1)
         for field in fields:
             value = getattr(submission, field)
             if value is not None:
-                sums[field] += value
+                sums[field] += sign * value
     sums["count"] = count
     return sums
 

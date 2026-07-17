@@ -147,6 +147,8 @@ What's still missing: general hardening (retry/backoff on ZATCA timeouts, more g
 
 On a cold page load with **no query string at all** (e.g. the "View Invoices" dashboard link), `issue_date_from`/`issue_date_to` both default to today — this avoids loading an organization's entire invoice history by default as volume grows over time. Submitting the filter form (even filtering by an unrelated field like `invoice_number` with the date fields left blank) is treated as an explicit choice and does **not** get an implicit today-only constraint bolted on. The list is paginated at 25/page (`paginate_by`), and pagination happens before the per-row totals/remarks computation (`_attach_totals`/`_attach_remarks`) so that work only runs for the current page's rows, not the full filtered set.
 
+**Summary netting**: per-row totals (`_attach_totals`) are always positive, matching the UBL/ZATCA XML convention — a credit note's "credit" nature is conveyed by its document type code (381), not a negative amount. But the page-wise/all-pages "Summary" row and the Excel export's summary row (`_sum_totals`) are a business-reporting aggregate, not part of ZATCA compliance, so they net credit notes as negative contributions (`_DOCUMENT_TYPE_SUMMARY_SIGN`): invoices + debit notes (charges) minus credit notes (returns) — the standard sales-ledger convention. `summary['count']` stays a plain row count, unaffected.
+
 ### Test Patterns
 
 Tests use `django.test.TestCase` and `unittest.mock.patch`. There are no shared fixtures — each test creates its own objects inline. API tests always pass `content_type='application/json'` with `json.dumps(payload)` to the test client. See `invoices/tests.py` for the API test helper pattern (`_make_org_with_device`, `_auth_header`).
