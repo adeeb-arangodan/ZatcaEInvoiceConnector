@@ -666,6 +666,70 @@ class OrganizationCrudTests(TestCase):
         self.assertIsNone(device.pcsid)
 
 
+class DeviceAdminDeleteTests(TestCase):
+    """Confirms DeviceAdmin.has_delete_permission blocks deleting a device with
+    invoices attached, through both the single-object delete page and the
+    built-in "Delete selected" bulk action — closing the gap the app-level
+    DeviceDeleteView guard doesn't cover."""
+
+    def _make_superuser(self, email="admin@example.com"):
+        return User.objects.create_user(
+            username=email, email=email, password="testpass123", is_staff=True, is_superuser=True,
+        )
+
+    def test_single_object_delete_blocked_when_device_has_invoice(self):
+        organization, _owner = _make_owned_organization()
+        device = Device.objects.create(
+            organization=organization, asset_id="A1", egs_sw_serial_number="S1", otp="1",
+        )
+        InvoiceSubmission.objects.create(
+            organization=organization, device=device,
+            document_type=InvoiceSubmission.DOCUMENT_TYPE_INVOICE,
+            invoice_number="INV-001", payload={},
+        )
+        admin = self._make_superuser()
+        self.client.force_login(admin)
+
+        response = self.client.get(f"/admin/organization/device/{device.pk}/delete/")
+
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(Device.objects.filter(pk=device.pk).exists())
+
+    def test_bulk_delete_selected_refused_when_device_has_invoice(self):
+        organization, _owner = _make_owned_organization()
+        device = Device.objects.create(
+            organization=organization, asset_id="A1", egs_sw_serial_number="S1", otp="1",
+        )
+        InvoiceSubmission.objects.create(
+            organization=organization, device=device,
+            document_type=InvoiceSubmission.DOCUMENT_TYPE_INVOICE,
+            invoice_number="INV-001", payload={},
+        )
+        admin = self._make_superuser()
+        self.client.force_login(admin)
+
+        response = self.client.post(
+            "/admin/organization/device/",
+            {"action": "delete_selected", "_selected_action": [str(device.pk)]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(Device.objects.filter(pk=device.pk).exists())
+        self.assertEqual(InvoiceSubmission.objects.filter(device=device).count(), 1)
+
+    def test_single_object_delete_still_works_when_device_has_no_invoices(self):
+        organization, _owner = _make_owned_organization()
+        device = Device.objects.create(
+            organization=organization, asset_id="A1", egs_sw_serial_number="S1", otp="1",
+        )
+        admin = self._make_superuser()
+        self.client.force_login(admin)
+
+        response = self.client.post(f"/admin/organization/device/{device.pk}/delete/", {"post": "yes"})
+
+        self.assertFalse(Device.objects.filter(pk=device.pk).exists())
+
+
 class LandingPageTests(TestCase):
     def test_anonymous_sees_welcome_page(self):
         response = self.client.get(reverse("organization:landing"))

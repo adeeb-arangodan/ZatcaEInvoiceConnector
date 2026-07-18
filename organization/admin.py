@@ -49,6 +49,13 @@ class DeviceAdmin(admin.ModelAdmin):
     list_filter = ("organization",)
     actions = ["reissue_credentials"]
 
+    def has_delete_permission(self, request, obj=None):
+        if not super().has_delete_permission(request, obj):
+            return False
+        if obj is not None and (obj.invoice_submissions.exists() or obj.invoice_submission_failures.exists()):
+            return False
+        return True
+
     @admin.action(description="Reissue ZATCA credentials (CSR + CSID + PCSID) using current OTP")
     def reissue_credentials(self, request, queryset):
         for device in queryset:
