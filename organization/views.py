@@ -191,3 +191,26 @@ class DeviceDeleteView(LoginRequiredMixin, OrgScopedMixin, DeleteView):
 
     def get_success_url(self):
         return reverse("organization:dashboard", kwargs={"pk": self.get_organization().pk})
+
+    def _block_if_has_invoices(self):
+        device = self.get_object()
+        if device.invoice_submissions.exists() or device.invoice_submission_failures.exists():
+            messages.error(
+                self.request,
+                f'"{device}" has submitted invoices and cannot be deleted — '
+                "ZATCA requires them to be retained.",
+            )
+            return HttpResponseRedirect(self.get_success_url())
+        return None
+
+    def get(self, request, *args, **kwargs):
+        blocked = self._block_if_has_invoices()
+        if blocked:
+            return blocked
+        return super().get(request, *args, **kwargs)
+
+    def post(self, request, *args, **kwargs):
+        blocked = self._block_if_has_invoices()
+        if blocked:
+            return blocked
+        return super().post(request, *args, **kwargs)

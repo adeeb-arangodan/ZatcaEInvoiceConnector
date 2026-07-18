@@ -5,6 +5,8 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from unittest.mock import patch
 
+from invoices.models import InvoiceSubmission, InvoiceSubmissionFailure
+
 from .models import Device, DeviceKeyMaterial, Organization
 from .services import (
     _build_zatca_csr_config,
@@ -237,6 +239,72 @@ class OrganizationCrudTests(TestCase):
 
         self.assertRedirects(response, reverse("organization:dashboard", args=[organization.pk]))
         self.assertFalse(Device.objects.filter(pk=device.pk).exists())
+
+    def test_delete_device_with_invoice_submission_is_blocked_on_post(self):
+        organization, user = _make_owned_organization()
+        self.client.force_login(user)
+        device = Device.objects.create(
+            organization=organization,
+            asset_id="ASSET-100",
+            egs_sw_serial_number="SERIAL-200",
+            otp="123456",
+        )
+        InvoiceSubmission.objects.create(
+            organization=organization,
+            device=device,
+            document_type=InvoiceSubmission.DOCUMENT_TYPE_INVOICE,
+            invoice_number="INV-001",
+            payload={},
+        )
+
+        response = self.client.post(reverse("organization:device-delete", args=[device.pk]))
+
+        self.assertRedirects(response, reverse("organization:dashboard", args=[organization.pk]))
+        self.assertTrue(Device.objects.filter(pk=device.pk).exists())
+
+    def test_delete_device_with_invoice_submission_is_blocked_on_get(self):
+        organization, user = _make_owned_organization()
+        self.client.force_login(user)
+        device = Device.objects.create(
+            organization=organization,
+            asset_id="ASSET-100",
+            egs_sw_serial_number="SERIAL-200",
+            otp="123456",
+        )
+        InvoiceSubmission.objects.create(
+            organization=organization,
+            device=device,
+            document_type=InvoiceSubmission.DOCUMENT_TYPE_INVOICE,
+            invoice_number="INV-001",
+            payload={},
+        )
+
+        response = self.client.get(reverse("organization:device-delete", args=[device.pk]))
+
+        self.assertRedirects(response, reverse("organization:dashboard", args=[organization.pk]))
+        self.assertTrue(Device.objects.filter(pk=device.pk).exists())
+
+    def test_delete_device_with_invoice_submission_failure_is_blocked(self):
+        organization, user = _make_owned_organization()
+        self.client.force_login(user)
+        device = Device.objects.create(
+            organization=organization,
+            asset_id="ASSET-100",
+            egs_sw_serial_number="SERIAL-200",
+            otp="123456",
+        )
+        InvoiceSubmissionFailure.objects.create(
+            organization=organization,
+            device=device,
+            document_type=InvoiceSubmission.DOCUMENT_TYPE_INVOICE,
+            invoice_number="INV-002",
+            payload={},
+        )
+
+        response = self.client.post(reverse("organization:device-delete", args=[device.pk]))
+
+        self.assertRedirects(response, reverse("organization:dashboard", args=[organization.pk]))
+        self.assertTrue(Device.objects.filter(pk=device.pk).exists())
 
     @override_settings(ZATCA_CSR_CERT_TEMPLATE_NAME="ZATCA-Code-Signing")
     def test_build_zatca_csr_config_uses_device_and_organization_fields(self):
