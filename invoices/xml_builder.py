@@ -43,12 +43,15 @@ def _sub(parent, ns, tag, text=None, **attrib):
 
 
 def _compute_totals(items, doc_level_discount_vat=0, doc_level_discount_novat=0, advance_paid=0):
+    def q(value):
+        return value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
     line_extension_amount = Decimal('0')
     standard_taxable = Decimal('0')
     discount_vat = Decimal(str(doc_level_discount_vat))
     discount_novat = Decimal(str(doc_level_discount_novat))
     discount_total = discount_vat + discount_novat
-    advance = Decimal(str(advance_paid))
+    advance = q(Decimal(str(advance_paid)))
 
     for item in items:
         qty = Decimal(str(item['qty']))
@@ -62,19 +65,25 @@ def _compute_totals(items, doc_level_discount_vat=0, doc_level_discount_novat=0,
     # line net amounts minus document-level allowances (the doc-level VAT
     # discount is modeled as an allowance against the 'S' category), so the
     # VAT amount itself must be computed on that discounted base.
-    vat_total = (standard_taxable - discount_vat) * VAT_RATE
-    tax_exclusive = line_extension_amount - discount_total
+    tax_exclusive = q(line_extension_amount - discount_total)
+    vat_total = q((standard_taxable - discount_vat) * VAT_RATE)
+    # BR-CO-15: BT-112 (TaxInclusiveAmount) must equal the *already-rounded*
+    # BT-109 (TaxExclusiveAmount) + BT-110 (TaxAmount) exactly — summing the
+    # unrounded components and rounding that sum independently can drift by a
+    # cent when the two component roundings land on opposite sides of their
+    # own boundary. Deriving tax_inclusive/payable from the rounded parts
+    # instead guarantees the identity ZATCA checks.
     tax_inclusive = tax_exclusive + vat_total
     payable = tax_inclusive - advance
 
     return {
-        'line_extension': line_extension_amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
-        'discount_total': discount_total.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
-        'tax_exclusive': tax_exclusive.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
-        'vat_total': vat_total.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
-        'tax_inclusive': tax_inclusive.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
-        'advance': advance.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
-        'payable': payable.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+        'line_extension': q(line_extension_amount),
+        'discount_total': q(discount_total),
+        'tax_exclusive': tax_exclusive,
+        'vat_total': vat_total,
+        'tax_inclusive': tax_inclusive,
+        'advance': advance,
+        'payable': payable,
     }
 
 

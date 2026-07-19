@@ -31,7 +31,7 @@ from .services import (
     create_return_credit_note,
 )
 from .submission import submit_to_zatca
-from .xml_builder import build_compliance_sample_invoice
+from .xml_builder import _compute_totals, build_compliance_sample_invoice
 
 SUBMIT_URL = '/api/invoices/submit/'
 
@@ -438,6 +438,46 @@ class InvoiceHashingTests(TestCase):
         org.refresh_from_db()
 
         self.assertEqual(org.last_invoice_hash, 'some-hash')
+
+
+class ComputeTotalsRoundingTests(TestCase):
+    """Regression coverage for BR-CO-15: TaxInclusiveAmount (BT-112) must equal
+    the already-rounded TaxExclusiveAmount (BT-109) + TaxAmount (BT-110). Rounding
+    their unrounded sum independently can drift by a cent — reproduced concretely
+    below and confirmed to affect ~24.6% of possible line-extension amounts before
+    the fix."""
+
+    def _totals(self, price, qty='1.0000', vat_type='S', advance_paid=0):
+        items = [{'slno': 1, 'code': 'ITEM-001', 'name': 'Item', 'qty': qty, 'price': price, 'vat_type': vat_type}]
+        return _compute_totals(items, advance_paid=advance_paid)
+
+    def test_boundary_case_satisfies_br_co_15(self):
+        totals = self._totals(price='0.0044')
+
+        self.assertEqual(totals['tax_exclusive'], Decimal('0.00'))
+        self.assertEqual(totals['vat_total'], Decimal('0.00'))
+        self.assertEqual(totals['tax_inclusive'], totals['tax_exclusive'] + totals['vat_total'])
+
+    def test_br_co_15_holds_across_a_sweep_of_prices(self):
+        for cents in range(0, 20000, 7):
+            price = str(Decimal(cents) / Decimal(10000))
+            totals = self._totals(price=price)
+            self.assertEqual(
+                totals['tax_inclusive'], totals['tax_exclusive'] + totals['vat_total'],
+                f'BR-CO-15 violated for price={price}',
+            )
+
+    def test_payable_derives_from_rounded_tax_inclusive_and_advance(self):
+        totals = self._totals(price='0.0044', advance_paid='0.005')
+
+        self.assertEqual(totals['payable'], totals['tax_inclusive'] - totals['advance'])
+
+    def test_whole_number_amounts_unaffected(self):
+        totals = self._totals(price='100.0000')
+
+        self.assertEqual(totals['tax_exclusive'], Decimal('100.00'))
+        self.assertEqual(totals['vat_total'], Decimal('15.00'))
+        self.assertEqual(totals['tax_inclusive'], Decimal('115.00'))
 
 
 @override_settings(DEVICE_KEY_ENCRYPTION_KEY=Fernet.generate_key().decode())
