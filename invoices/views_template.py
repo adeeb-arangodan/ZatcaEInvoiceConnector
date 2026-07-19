@@ -12,7 +12,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.text import slugify
 from django.views import View
-from django.views.generic import DetailView, FormView, ListView
+from django.views.generic import DeleteView, DetailView, FormView, ListView
 
 from organization.mixins import OrgScopedMixin
 
@@ -588,3 +588,20 @@ class FailedSubmissionResubmitView(LoginRequiredMixin, OrgScopedMixin, View):
         failure.save(update_fields=["resolved", "resolved_submission", "resolved_at"])
         messages.success(request, f"Resubmitted successfully as invoice ICV {submission.icv}.")
         return redirect("organization:failed-submission-list", pk=organization.pk)
+
+
+class FailedSubmissionDeleteView(LoginRequiredMixin, OrgScopedMixin, DeleteView):
+    model = InvoiceSubmissionFailure
+    pk_url_kwarg = "failure_pk"
+    template_name = "invoices/failed_submission_confirm_delete.html"
+
+    def get_queryset(self):
+        return InvoiceSubmissionFailure.objects.filter(organization_id=self.kwargs["pk"])
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["organization"] = self.get_organization()
+        return context
+
+    def get_success_url(self):
+        return reverse("organization:failed-submission-list", kwargs={"pk": self.kwargs["pk"]})

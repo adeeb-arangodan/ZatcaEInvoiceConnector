@@ -2,6 +2,7 @@ from django.urls import path
 
 from invoices.views_template import (
     CustomReturnInvoiceFormView,
+    FailedSubmissionDeleteView,
     FailedSubmissionListView,
     FailedSubmissionResubmitView,
     InvoiceDetailView,
@@ -86,5 +87,10 @@ urlpatterns = [
         "organizations/<int:pk>/invoices/failed/<int:failure_pk>/resubmit/",
         FailedSubmissionResubmitView.as_view(),
         name="failed-submission-resubmit",
+    ),
+    path(
+        "organizations/<int:pk>/invoices/failed/<int:failure_pk>/delete/",
+        FailedSubmissionDeleteView.as_view(),
+        name="failed-submission-delete",
     ),
 ]

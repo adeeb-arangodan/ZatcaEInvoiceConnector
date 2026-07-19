@@ -1544,6 +1544,57 @@ class FailedSubmissionViewTests(TestCase):
 
         self.assertEqual(response.status_code, 404)
 
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_delete_confirm_page_shows_failure(self, mock_submit):
+        org, device, user = self._make_org_with_signing_device()
+        failure = self._make_failure(org, device, mock_submit)
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:failed-submission-delete', args=[org.pk, failure.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['object'], failure)
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_delete_removes_unresolved_failure(self, mock_submit):
+        org, device, user = self._make_org_with_signing_device()
+        failure = self._make_failure(org, device, mock_submit)
+        self.client.force_login(user)
+
+        response = self.client.post(reverse('organization:failed-submission-delete', args=[org.pk, failure.pk]))
+
+        self.assertRedirects(response, reverse('organization:failed-submission-list', args=[org.pk]))
+        self.assertFalse(InvoiceSubmissionFailure.objects.filter(pk=failure.pk).exists())
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_delete_removes_resolved_failure(self, mock_submit):
+        org, device, user = self._make_org_with_signing_device()
+        failure = self._make_failure(org, device, mock_submit)
+        mock_submit.return_value = {'status_code': 200}
+        self.client.force_login(user)
+        self.client.post(reverse('organization:failed-submission-resubmit', args=[org.pk, failure.pk]))
+        failure.refresh_from_db()
+        self.assertTrue(failure.resolved)
+
+        response = self.client.post(reverse('organization:failed-submission-delete', args=[org.pk, failure.pk]))
+
+        self.assertRedirects(response, reverse('organization:failed-submission-list', args=[org.pk]))
+        self.assertFalse(InvoiceSubmissionFailure.objects.filter(pk=failure.pk).exists())
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_delete_cross_owner_returns_404(self, mock_submit):
+        org, device, _user = self._make_org_with_signing_device()
+        failure = self._make_failure(org, device, mock_submit)
+        _other_org, _other_device, other_user = self._make_org_with_signing_device(
+            email='deleteother@example.com', vat_number='399999999900093', cr_number='9999999991',
+        )
+        self.client.force_login(other_user)
+
+        response = self.client.post(reverse('organization:failed-submission-delete', args=[org.pk, failure.pk]))
+
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(InvoiceSubmissionFailure.objects.filter(pk=failure.pk).exists())
+
 
 class InvoiceListViewTests(TestCase):
 

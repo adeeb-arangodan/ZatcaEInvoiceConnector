@@ -87,9 +87,9 @@
                                     {% csrf_token %}
                                     <button type="submit">Resubmit</button>
                                 </form>
-                            {% else %}
-                                <span style="color: #999;">&mdash;</span>
+                                &nbsp;|&nbsp;
                             {% endif %}
+                            <a href="{% url 'organization:failed-submission-delete' organization.pk failure.pk %}">Delete</a>
                         </td>
                     </tr>
                 {% endfor %}
