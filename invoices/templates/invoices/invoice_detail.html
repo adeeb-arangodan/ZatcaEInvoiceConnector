@@ -27,6 +27,12 @@
         <a href="{% url 'organization:invoice-list' organization.pk %}">Back to invoice list</a>
         &nbsp;&nbsp;
         <button onclick="window.print()">Print</button>
+        {% if invoice.xml_document %}
+            &nbsp;&nbsp;
+            <a href="{% url 'organization:invoice-xml' organization.pk invoice.pk %}" target="_blank">View XML</a>
+            &nbsp;&nbsp;
+            <a href="{% url 'organization:invoice-xml-download' organization.pk invoice.pk %}">Download XML</a>
+        {% endif %}
     </p>
 
     <h1>

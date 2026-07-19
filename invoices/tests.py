@@ -1,5 +1,6 @@
 import json
 import uuid
+import zipfile
 from datetime import date
 from decimal import Decimal
 from io import BytesIO
@@ -1828,6 +1829,85 @@ class InvoiceListViewTests(TestCase):
         self.assertEqual(len(rows), 3)  # header + 1 invoice + summary
 
 
+class InvoiceXmlZipExportTests(TestCase):
+
+    def _make_org_with_device(self, email='owner@example.com', **org_overrides):
+        defaults = {**ORG_DEFAULTS}
+        defaults.update(org_overrides)
+        user = User.objects.create_user(username=email, email=email, password='testpass123')
+        org = Organization.objects.create(email=email, owner_user=user, **defaults)
+        device = Device.objects.create(
+            organization=org,
+            asset_id='ASSET-100',
+            egs_sw_serial_number='SERIAL-200',
+            otp='123456',
+            csid_response=FAKE_CSID,
+        )
+        return org, device, user
+
+    def _make_submission(self, org, device, icv, xml_document='', issue_date=None, **payload_overrides):
+        issue_date = issue_date or timezone.localdate().isoformat()
+        payload = {'invoice_number': f'INV-{icv:03d}', 'issue_date': issue_date, 'customer_name': 'Test Customer'}
+        payload.update(payload_overrides)
+        return InvoiceSubmission.objects.create(
+            organization=org,
+            device=device,
+            document_type=payload_overrides.get('document_type', InvoiceSubmission.DOCUMENT_TYPE_INVOICE),
+            invoice_number=payload['invoice_number'],
+            payload=payload,
+            status=InvoiceSubmission.STATUS_SUBMITTED,
+            icv=icv,
+            xml_document=xml_document,
+        )
+
+    def test_zip_contains_only_filtered_rows(self):
+        org, device, user = self._make_org_with_device()
+        self._make_submission(org, device, 1, xml_document='<A/>', issue_date='2026-06-24')
+        self._make_submission(org, device, 2, xml_document='<B/>', issue_date='2026-06-25')
+        self._make_submission(org, device, 3, xml_document='<C/>', issue_date='2026-06-25')
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse('organization:invoice-xml-zip-export', args=[org.pk]),
+            {'issue_date_from': '2026-06-25', 'issue_date_to': '2026-06-25'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/zip')
+        self.assertIn('attachment; filename=', response['Content-Disposition'])
+
+        with zipfile.ZipFile(BytesIO(response.content)) as zf:
+            names = zf.namelist()
+            self.assertEqual(len(names), 2)
+            contents = {zf.read(name).decode() for name in names}
+            self.assertEqual(contents, {'<B/>', '<C/>'})
+
+    def test_zip_skips_rows_with_no_xml_document(self):
+        org, device, user = self._make_org_with_device()
+        self._make_submission(org, device, 1, xml_document='<A/>')
+        self._make_submission(org, device, 2, xml_document='')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-xml-zip-export', args=[org.pk]))
+
+        with zipfile.ZipFile(BytesIO(response.content)) as zf:
+            self.assertEqual(len(zf.namelist()), 1)
+
+    def test_zip_does_not_leak_other_organizations_invoices(self):
+        org, device, user = self._make_org_with_device()
+        other_org, other_device, _other_user = self._make_org_with_device(
+            email='xmlzipother@example.com', vat_number='399999999900094', cr_number='9999999992',
+        )
+        self._make_submission(org, device, 1, xml_document='<A/>')
+        self._make_submission(other_org, other_device, 1, xml_document='<Other/>')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-xml-zip-export', args=[org.pk]))
+
+        with zipfile.ZipFile(BytesIO(response.content)) as zf:
+            self.assertEqual(len(zf.namelist()), 1)
+
+
 class InvoiceDetailViewTests(TestCase):
 
     def _make_org_with_device(self, email='owner@example.com', **org_overrides):
@@ -1844,7 +1924,7 @@ class InvoiceDetailViewTests(TestCase):
         )
         return org, device, user
 
-    def _make_submission(self, org, device, icv=1, qr_code_data='', **payload_overrides):
+    def _make_submission(self, org, device, icv=1, qr_code_data='', xml_document='', **payload_overrides):
         payload = {
             'invoice_number': f'INV-{icv:03d}',
             'issue_date': '2026-07-14',
@@ -1868,6 +1948,7 @@ class InvoiceDetailViewTests(TestCase):
             status=InvoiceSubmission.STATUS_SUBMITTED,
             icv=icv,
             qr_code_data=qr_code_data,
+            xml_document=xml_document,
         )
 
     def test_detail_shows_line_items_and_totals(self):
@@ -1923,3 +2004,56 @@ class InvoiceDetailViewTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertIn(reverse('login'), response.url)
+
+    def test_view_xml_serves_inline(self):
+        org, device, user = self._make_org_with_device()
+        invoice = self._make_submission(org, device, xml_document='<Invoice>content</Invoice>')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-xml', args=[org.pk, invoice.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/xml')
+        self.assertIn('inline; filename=', response['Content-Disposition'])
+        self.assertEqual(response.content.decode(), '<Invoice>content</Invoice>')
+
+    def test_download_xml_serves_as_attachment(self):
+        org, device, user = self._make_org_with_device()
+        invoice = self._make_submission(org, device, xml_document='<Invoice>content</Invoice>')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-xml-download', args=[org.pk, invoice.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('attachment; filename=', response['Content-Disposition'])
+        self.assertEqual(response.content.decode(), '<Invoice>content</Invoice>')
+
+    def test_view_xml_redirects_with_message_when_xml_not_available(self):
+        org, device, user = self._make_org_with_device()
+        invoice = self._make_submission(org, device, xml_document='')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-xml', args=[org.pk, invoice.pk]))
+
+        self.assertRedirects(response, reverse('organization:invoice-detail', args=[org.pk, invoice.pk]))
+
+    def test_download_xml_redirects_with_message_when_xml_not_available(self):
+        org, device, user = self._make_org_with_device()
+        invoice = self._make_submission(org, device, xml_document='')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-xml-download', args=[org.pk, invoice.pk]))
+
+        self.assertRedirects(response, reverse('organization:invoice-detail', args=[org.pk, invoice.pk]))
+
+    def test_view_xml_does_not_leak_other_organizations_invoice(self):
+        org, device, user = self._make_org_with_device()
+        other_org, other_device, _other_user = self._make_org_with_device(
+            email='xmlother@example.com', vat_number='399999999900095', cr_number='9999999993',
+        )
+        other_invoice = self._make_submission(other_org, other_device, xml_document='<Invoice/>')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:invoice-xml', args=[org.pk, other_invoice.pk]))
+
+        self.assertEqual(response.status_code, 404)

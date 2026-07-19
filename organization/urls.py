@@ -8,6 +8,9 @@ from invoices.views_template import (
     InvoiceExportView,
     InvoiceListView,
     InvoiceResubmitView,
+    InvoiceXmlDownloadView,
+    InvoiceXmlView,
+    InvoiceXmlZipExportView,
     ReturnInvoiceFormView,
 )
 
@@ -40,9 +43,24 @@ urlpatterns = [
     path("organizations/<int:pk>/invoices/", InvoiceListView.as_view(), name="invoice-list"),
     path("organizations/<int:pk>/invoices/export/", InvoiceExportView.as_view(), name="invoice-export"),
     path(
+        "organizations/<int:pk>/invoices/xml/",
+        InvoiceXmlZipExportView.as_view(),
+        name="invoice-xml-zip-export",
+    ),
+    path(
         "organizations/<int:pk>/invoices/<int:invoice_pk>/",
         InvoiceDetailView.as_view(),
         name="invoice-detail",
+    ),
+    path(
+        "organizations/<int:pk>/invoices/<int:invoice_pk>/xml/",
+        InvoiceXmlView.as_view(),
+        name="invoice-xml",
+    ),
+    path(
+        "organizations/<int:pk>/invoices/<int:invoice_pk>/xml/download/",
+        InvoiceXmlDownloadView.as_view(),
+        name="invoice-xml-download",
     ),
     path(
         "organizations/<int:pk>/invoices/<int:invoice_pk>/return/",

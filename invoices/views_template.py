@@ -1,3 +1,5 @@
+import io
+import zipfile
 from decimal import ROUND_HALF_UP, Decimal
 from urllib.parse import urlencode
 
@@ -122,6 +124,8 @@ class InvoiceListView(LoginRequiredMixin, OrgScopedMixin, InvoiceFilterMixin, Li
         context["querystring"] = urlencode({**{k: v for k, v in filters.items() if v}, "summary_scope": summary_scope})
         export_base_url = reverse("organization:invoice-export", args=[self.organization.pk])
         context["export_url"] = f"{export_base_url}?{filter_qs}" if filter_qs else export_base_url
+        xml_zip_base_url = reverse("organization:invoice-xml-zip-export", args=[self.organization.pk])
+        context["xml_zip_export_url"] = f"{xml_zip_base_url}?{filter_qs}" if filter_qs else xml_zip_base_url
         return context
 
 
@@ -143,6 +147,52 @@ class InvoiceExportView(LoginRequiredMixin, OrgScopedMixin, InvoiceFilterMixin, 
         filename = f"invoices_{slugify(self.organization.name)}_{timezone.localdate().isoformat()}.xlsx"
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         workbook.save(response)
+        return response
+
+
+def _xml_filename(submission):
+    return f"{submission.icv}_{slugify(submission.payload.get('invoice_number', ''))}.xml"
+
+
+class InvoiceXmlView(LoginRequiredMixin, OrgScopedMixin, View):
+    http_method_names = ["get"]
+    download = False
+
+    def get(self, request, *args, **kwargs):
+        submission = get_object_or_404(
+            InvoiceSubmission, pk=kwargs["invoice_pk"], organization_id=kwargs["pk"],
+        )
+        if not submission.xml_document:
+            messages.error(request, "No XML is available yet for this invoice.")
+            return redirect("organization:invoice-detail", pk=kwargs["pk"], invoice_pk=kwargs["invoice_pk"])
+
+        response = HttpResponse(submission.xml_document, content_type="application/xml")
+        disposition = "attachment" if self.download else "inline"
+        response["Content-Disposition"] = f'{disposition}; filename="{_xml_filename(submission)}"'
+        return response
+
+
+class InvoiceXmlDownloadView(InvoiceXmlView):
+    download = True
+
+
+class InvoiceXmlZipExportView(LoginRequiredMixin, OrgScopedMixin, InvoiceFilterMixin, View):
+    http_method_names = ["get"]
+
+    def get(self, request, *args, **kwargs):
+        self.organization = self.get_organization()
+        submissions = self.get_queryset()
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for submission in submissions:
+                if not submission.xml_document:
+                    continue
+                zf.writestr(_xml_filename(submission), submission.xml_document)
+
+        response = HttpResponse(buffer.getvalue(), content_type="application/zip")
+        filename = f"invoices_xml_{slugify(self.organization.name)}_{timezone.localdate().isoformat()}.zip"
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
 
 
