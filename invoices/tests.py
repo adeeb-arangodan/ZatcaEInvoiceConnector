@@ -1,7 +1,7 @@
 import json
 import uuid
 import zipfile
-from datetime import date
+from datetime import date, time
 from decimal import Decimal
 from io import BytesIO
 from unittest.mock import MagicMock, patch
@@ -1064,6 +1064,7 @@ class CustomReturnInvoiceFlowTests(TestCase):
             'form-1-slno': '2', 'form-1-code': 'ITEM-002', 'form-1-name': 'Medicine',
             'form-1-vat_type': 'S', 'form-1-qty': '2.0000', 'form-1-price': '50.0000',
             'issue_date': '2026-07-20',
+            'issue_time': '23:59',
             'system_return_number': '',
             'reason': 'partial return',
         }
@@ -1082,12 +1083,14 @@ class CustomReturnInvoiceFlowTests(TestCase):
             org, device, invoice,
             items=[invoice.payload['items'][0]],
             issue_date=date(2026, 7, 20),
+            issue_time=time(23, 59),
             reason='partial return',
         )
 
         self.assertEqual(len(credit_note.payload['items']), 1)
         self.assertEqual(credit_note.payload['items'][0]['code'], 'ITEM-001')
         self.assertEqual(credit_note.payload['issue_date'], '2026-07-20')
+        self.assertEqual(credit_note.payload['issue_time'], '23:59:00')
         self.assertNotEqual(credit_note.payload['issue_date'], invoice.payload['issue_date'])
         self.assertEqual(credit_note.document_type, InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE)
         self.assertEqual(credit_note.original_invoice_id, invoice.pk)
@@ -1101,7 +1104,8 @@ class CustomReturnInvoiceFlowTests(TestCase):
 
         edited_item = {**invoice.payload['items'][0], 'qty': '1.0000', 'price': '40.0000'}
         credit_note = create_custom_return_credit_note(
-            org, device, invoice, items=[edited_item], issue_date=date(2026, 7, 20), reason='partial refund',
+            org, device, invoice, items=[edited_item], issue_date=date(2026, 7, 20), issue_time=time(23, 59),
+            reason='partial refund',
         )
 
         self.assertEqual(credit_note.payload['items'][0]['price'], '40.0000')
@@ -1115,13 +1119,13 @@ class CustomReturnInvoiceFlowTests(TestCase):
         invoice = process_invoice_submission(org, resolved_device, validated_data)
         create_custom_return_credit_note(
             org, device, invoice, items=[invoice.payload['items'][0]], issue_date=date(2026, 7, 20),
-            system_return_number='SYS-CUSTOM-1',
+            issue_time=time(23, 59), system_return_number='SYS-CUSTOM-1',
         )
 
         with self.assertRaises(DuplicateReturnNumberError):
             create_custom_return_credit_note(
                 org, device, invoice, items=[invoice.payload['items'][0]], issue_date=date(2026, 7, 20),
-                system_return_number='SYS-CUSTOM-1',
+                issue_time=time(23, 59), system_return_number='SYS-CUSTOM-1',
             )
 
     @patch('invoices.pipeline.submit_to_zatca')
@@ -1136,6 +1140,7 @@ class CustomReturnInvoiceFlowTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['form'].initial['issue_date'], timezone.localdate())
+        self.assertEqual(response.context['form'].initial['issue_time'], time(23, 59))
 
     @patch('invoices.pipeline.submit_to_zatca')
     def test_view_post_creates_partial_credit_note_with_custom_date(self, mock_submit):
@@ -1155,6 +1160,7 @@ class CustomReturnInvoiceFlowTests(TestCase):
         self.assertEqual(len(credit_note.payload['items']), 1)
         self.assertEqual(credit_note.payload['items'][0]['code'], 'ITEM-001')
         self.assertEqual(credit_note.payload['issue_date'], '2026-07-20')
+        self.assertEqual(credit_note.payload['issue_time'], '23:59:00')
 
     @patch('invoices.pipeline.submit_to_zatca')
     def test_view_post_with_no_items_selected_shows_error_and_creates_nothing(self, mock_submit):

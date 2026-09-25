@@ -1,5 +1,3 @@
-from django.utils import timezone
-
 from .models import InvoiceSubmission
 from .pipeline import process_invoice_submission
 
@@ -65,14 +63,14 @@ def create_return_credit_note(organization, device, original_invoice, system_ret
     return credit_note
 
 
-def build_custom_return_payload(original_invoice, items, issue_date, system_return_number='', reason=''):
+def build_custom_return_payload(original_invoice, items, issue_date, issue_time, system_return_number='', reason=''):
     payload = dict(original_invoice.payload)
     payload['invoice_type_code'] = '381'
     payload['billing_reference'] = payload.get('invoice_number', '')
     payload['reason'] = reason or 'Sales return'
     payload['items'] = items
     payload['issue_date'] = issue_date.isoformat() if hasattr(issue_date, 'isoformat') else issue_date
-    payload['issue_time'] = timezone.localtime().strftime('%H:%M:%S')
+    payload['issue_time'] = issue_time.strftime('%H:%M:%S') if hasattr(issue_time, 'strftime') else issue_time
 
     # A custom return only reverses some of the original items, so the whole
     # invoice's document-level discount/advance-payment amounts (computed
@@ -93,11 +91,11 @@ def build_custom_return_payload(original_invoice, items, issue_date, system_retu
 
 
 def create_custom_return_credit_note(
-    organization, device, original_invoice, items, issue_date, system_return_number='', reason='',
+    organization, device, original_invoice, items, issue_date, issue_time, system_return_number='', reason='',
 ):
     from .serializers import InvoiceSubmissionSerializer
 
-    payload = build_custom_return_payload(original_invoice, items, issue_date, system_return_number, reason)
+    payload = build_custom_return_payload(original_invoice, items, issue_date, issue_time, system_return_number, reason)
 
     if system_return_number:
         if InvoiceSubmission.objects.filter(

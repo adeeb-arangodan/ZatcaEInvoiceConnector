@@ -1,5 +1,6 @@
 import io
 import zipfile
+from datetime import time
 from decimal import ROUND_HALF_UP, Decimal
 from urllib.parse import urlencode
 
@@ -378,6 +379,7 @@ CustomReturnItemFormSet = forms.formset_factory(CustomReturnItemForm, extra=0)
 
 class CustomReturnInvoiceForm(forms.Form):
     issue_date = forms.DateField(widget=forms.DateInput(attrs={"type": "date"}))
+    issue_time = forms.TimeField(widget=forms.TimeInput(attrs={"type": "time"}))
     system_return_number = forms.CharField(required=False, label="System return number (optional)")
     reason = forms.CharField(required=False, widget=forms.Textarea, label="Reason (optional)")
 
@@ -422,7 +424,9 @@ class CustomReturnInvoiceFormView(LoginRequiredMixin, OrgScopedMixin, View):
         )
 
     def get(self, request, *args, **kwargs):
-        form = CustomReturnInvoiceForm(initial={"issue_date": timezone.localdate()})
+        form = CustomReturnInvoiceForm(
+            initial={"issue_date": timezone.localdate(), "issue_time": time(23, 59)}
+        )
         formset = CustomReturnItemFormSet(initial=self._initial_items())
         return self._render(request, form, formset)
 
@@ -463,6 +467,7 @@ class CustomReturnInvoiceFormView(LoginRequiredMixin, OrgScopedMixin, View):
                 original_invoice=self.invoice,
                 items=selected_items,
                 issue_date=form.cleaned_data["issue_date"],
+                issue_time=form.cleaned_data["issue_time"],
                 system_return_number=form.cleaned_data["system_return_number"],
                 reason=form.cleaned_data["reason"],
             )

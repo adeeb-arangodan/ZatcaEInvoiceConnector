@@ -67,6 +67,11 @@
             </label>
         </p>
         <p>
+            <label>Issue Time (defaults to 11:59 PM)
+                {{ form.issue_time }}{{ form.issue_time.errors }}
+            </label>
+        </p>
+        <p>
             <label>{{ form.system_return_number.label }}
                 {{ form.system_return_number }}{{ form.system_return_number.errors }}
             </label>
