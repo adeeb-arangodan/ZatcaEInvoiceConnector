@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VAT Exemption Report - {{ organization.name }}</title>
+</head>
+<body>
+    {% if messages %}
+        {% for message in messages %}
+            <p style="color: {% if message.tags == 'error' %}red{% elif message.tags == 'warning' %}orange{% else %}green{% endif %};">
+                {{ message }}
+            </p>
+        {% endfor %}
+    {% endif %}
+
+    <p>
+        <a href="{% url 'organization:dashboard' organization.pk %}">Back to dashboard</a>
+        &nbsp;|&nbsp;
+        <a href="{% url 'organization:invoice-list' organization.pk %}">Invoices</a>
+    </p>
+
+    <h1>VAT Exemption Report - {{ organization.name }}</h1>
+    <p>Line items carrying a ZATCA VAT exception reason code (e.g. VATEX-SA-HEA, VATEX-SA-35), for auditing purposes.</p>
+
+    <form method="get" style="margin-bottom: 16px;">
+        <input type="hidden" name="view" value="{{ view }}">
+        <label>Issue Date From
+            <input type="date" name="issue_date_from" value="{{ filters.issue_date_from }}">
+        </label>
+        <label>To
+            <input type="date" name="issue_date_to" value="{{ filters.issue_date_to }}">
+        </label>
+        <button type="submit">Filter</button>
+        <a href="{% url 'organization:vat-exemption-report' organization.pk %}">Clear</a>
+    </form>
+
+    <p>
+        View:
+        {% if view == "items" %}<strong>Items</strong>{% else %}<a href="{{ view_toggle_urls.items }}">Items</a>{% endif %}
+        |
+        {% if view == "invoices" %}<strong>Invoices</strong>{% else %}<a href="{{ view_toggle_urls.invoices }}">Invoices</a>{% endif %}
+        &nbsp;&nbsp;
+        <a href="{{ export_url }}">Export to Excel</a>
+    </p>
+
+    {% if rows %}
+        {% if view == "items" %}
+            <table border="1" cellpadding="8" cellspacing="0">
+                <thead>
+                    <tr>
+                        <th>Type</th>
+                        <th>Invoice Number</th>
+                        <th>Issue Date</th>
+                        <th>Customer</th>
+                        <th>Item Code</th>
+                        <th>Item</th>
+                        <th>VAT Exception Reason</th>
+                        <th>Qty</th>
+                        <th>Unit Price</th>
+                        <th>Gross Amount</th>
+                        <th>Discount Share</th>
+                        <th>Amount After Discount</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in rows %}
+                        <tr>
+                            <td>{{ row.type }}</td>
+                            <td>{{ row.invoice_number }}</td>
+                            <td>{{ row.issue_date }}</td>
+                            <td>{{ row.customer_name }}</td>
+                            <td>{{ row.code }}</td>
+                            <td>{{ row.name }}</td>
+                            <td>{{ row.reason }}</td>
+                            <td>{{ row.qty }}</td>
+                            <td>{{ row.price }}</td>
+                            <td>{{ row.gross_amount }}</td>
+                            <td>{{ row.discount_share }}</td>
+                            <td>{{ row.amount_after_discount }}</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <td colspan="11"><strong>Total ({{ paginator.count }} item{{ paginator.count|pluralize }})</strong></td>
+                        <td><strong>{{ summary_total }}</strong></td>
+                    </tr>
+                </tfoot>
+            </table>
+        {% else %}
+            <table border="1" cellpadding="8" cellspacing="0">
+                <thead>
+                    <tr>
+                        <th>Type</th>
+                        <th>Invoice Number</th>
+                        <th>Issue Date</th>
+                        <th>Customer</th>
+                        {% for code in reason_codes %}
+                            <th>{{ code }}</th>
+                        {% endfor %}
+                        <th>Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in rows %}
+                        <tr>
+                            <td>{{ row.type }}</td>
+                            <td>{{ row.invoice_number }}</td>
+                            <td>{{ row.issue_date }}</td>
+                            <td>{{ row.customer_name }}</td>
+                            {% for amount in row.amounts %}
+                                <td>{{ amount }}</td>
+                            {% endfor %}
+                            <td>{{ row.row_total }}</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <td colspan="4"><strong>Grand Total ({{ paginator.count }} invoice{{ paginator.count|pluralize }})</strong></td>
+                        {% for amount in grand_total_amounts %}
+                            <td><strong>{{ amount }}</strong></td>
+                        {% endfor %}
+                        <td><strong>{{ grand_total }}</strong></td>
+                    </tr>
+                </tfoot>
+            </table>
+        {% endif %}
+
+        {% if page_obj.has_other_pages %}
+            <p style="margin-top: 12px;">
+                {% if page_obj.has_previous %}
+                    <a href="?page=1&{{ querystring }}">&laquo; First</a>
+                    <a href="?page={{ page_obj.previous_page_number }}&{{ querystring }}">Previous</a>
+                {% endif %}
+                Page {{ page_obj.number }} of {{ paginator.num_pages }} ({{ paginator.count }} total)
+                {% if page_obj.has_next %}
+                    <a href="?page={{ page_obj.next_page_number }}&{{ querystring }}">Next</a>
+                    <a href="?page={{ paginator.num_pages }}&{{ querystring }}">Last &raquo;</a>
+                {% endif %}
+            </p>
+        {% endif %}
+    {% else %}
+        <p>No items with a VAT exception reason match these filters.</p>
+    {% endif %}
+</body>
+</html>

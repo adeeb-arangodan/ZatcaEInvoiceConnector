@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from django import forms
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.core.paginator import Paginator
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -17,7 +18,11 @@ from django.views.generic import DeleteView, DetailView, FormView, ListView
 
 from organization.mixins import OrgScopedMixin
 
-from .exports import build_invoice_workbook
+from .exports import (
+    build_invoice_workbook,
+    build_vat_exemption_invoice_workbook,
+    build_vat_exemption_item_workbook,
+)
 from .models import InvoiceSubmission, InvoiceSubmissionFailure
 from .pipeline import InvoiceSubmissionRejected, deliver_to_zatca, process_invoice_submission
 from .qr import generate_qr_image_data_uri
@@ -306,6 +311,102 @@ def _attach_remarks(submission):
     else:
         original_number = submission.payload.get("billing_reference", "")
     submission.remarks = f"Issued for invoice {original_number}" if original_number else ""
+
+
+def _exemption_items(submission):
+    """Line items carrying a ZATCA VatExceptionReason code, with each item's
+    share of the invoice's non-taxable discount (doc_level_discount_novat)
+    allocated proportionally to its gross amount among all non-'S' lines on
+    that invoice — there is no per-line discount stored anywhere upstream.
+
+    Amounts are signed by document type (credit notes negative) so summing
+    them directly yields the correct netted total, matching the existing
+    invoice-list summary convention (_DOCUMENT_TYPE_SUMMARY_SIGN).
+    """
+    items = submission.payload.get("items", [])
+    non_s_total = sum(
+        (Decimal(str(item["qty"])) * Decimal(str(item["price"])) for item in items if item["vat_type"] != "S"),
+        Decimal("0"),
+    )
+    doc_level_discount_novat = Decimal(str(submission.payload.get("doc_level_discount_novat", 0) or 0))
+    sign = _DOCUMENT_TYPE_SUMMARY_SIGN.get(submission.document_type, 1)
+
+    rows = []
+    for item in items:
+        reason = item.get("VatExceptionReason") or ""
+        if not reason:
+            continue
+        qty = Decimal(str(item["qty"]))
+        price = Decimal(str(item["price"]))
+        raw_amount = qty * price
+        discount_share = (
+            raw_amount / non_s_total * doc_level_discount_novat if non_s_total else Decimal("0")
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        gross_amount = raw_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        amount_after_discount = gross_amount - discount_share
+
+        rows.append({
+            "type": submission.get_document_type_display(),
+            "invoice_number": submission.payload.get("invoice_number", ""),
+            "issue_date": submission.payload.get("issue_date", ""),
+            "customer_name": submission.payload.get("customer_name", ""),
+            "code": item["code"],
+            "name": item["name"],
+            "vat_type": item["vat_type"],
+            "reason": reason,
+            "qty": qty,
+            "price": price,
+            "gross_amount": sign * gross_amount,
+            "discount_share": sign * discount_share,
+            "amount_after_discount": sign * amount_after_discount,
+        })
+    return rows
+
+
+def _exemption_reason_totals(submission):
+    totals = {}
+    for row in _exemption_items(submission):
+        totals[row["reason"]] = totals.get(row["reason"], Decimal("0")) + row["amount_after_discount"]
+    return totals
+
+
+def _build_exemption_item_rows(submissions):
+    rows = []
+    for submission in submissions:
+        rows.extend(_exemption_items(submission))
+    total = sum((row["amount_after_discount"] for row in rows), Decimal("0"))
+    return rows, total
+
+
+def _build_exemption_invoice_rows(submissions):
+    per_submission_totals = []
+    reason_codes = set()
+    for submission in submissions:
+        totals = _exemption_reason_totals(submission)
+        if not totals:
+            continue
+        reason_codes.update(totals.keys())
+        per_submission_totals.append((submission, totals))
+
+    reason_codes = sorted(reason_codes)
+    grand_totals = {code: Decimal("0") for code in reason_codes}
+    invoice_rows = []
+    for submission, totals in per_submission_totals:
+        amounts = [totals.get(code, Decimal("0")) for code in reason_codes]
+        for code, amount in zip(reason_codes, amounts):
+            grand_totals[code] += amount
+        invoice_rows.append({
+            "type": submission.get_document_type_display(),
+            "invoice_number": submission.payload.get("invoice_number", ""),
+            "issue_date": submission.payload.get("issue_date", ""),
+            "customer_name": submission.payload.get("customer_name", ""),
+            "amounts": amounts,
+            "row_total": sum(amounts, Decimal("0")),
+        })
+
+    grand_total_amounts = [grand_totals[code] for code in reason_codes]
+    grand_total = sum(grand_total_amounts, Decimal("0"))
+    return invoice_rows, reason_codes, grand_total_amounts, grand_total
 
 
 class ReturnInvoiceForm(forms.Form):
@@ -610,3 +711,82 @@ class FailedSubmissionDeleteView(LoginRequiredMixin, OrgScopedMixin, DeleteView)
 
     def get_success_url(self):
         return reverse("organization:failed-submission-list", kwargs={"pk": self.kwargs["pk"]})
+
+
+class VatExemptionReportView(LoginRequiredMixin, OrgScopedMixin, InvoiceFilterMixin, View):
+    template_name = "invoices/vat_exemption_report.html"
+
+    def _get_view_mode(self):
+        mode = self.request.GET.get("view", "items")
+        return mode if mode in ("items", "invoices") else "items"
+
+    def get(self, request, *args, **kwargs):
+        self.organization = self.get_organization()
+        view_mode = self._get_view_mode()
+        filters = self._get_filters()
+        submissions = list(self.get_queryset())
+
+        context = {
+            "organization": self.organization,
+            "filters": filters,
+            "view": view_mode,
+        }
+
+        if view_mode == "items":
+            rows, total = _build_exemption_item_rows(submissions)
+            page_obj = Paginator(rows, 25).get_page(request.GET.get("page"))
+            context["page_obj"] = page_obj
+            context["paginator"] = page_obj.paginator
+            context["rows"] = page_obj.object_list
+            context["summary_total"] = total
+        else:
+            invoice_rows, reason_codes, grand_total_amounts, grand_total = _build_exemption_invoice_rows(submissions)
+            page_obj = Paginator(invoice_rows, 25).get_page(request.GET.get("page"))
+            context["page_obj"] = page_obj
+            context["paginator"] = page_obj.paginator
+            context["rows"] = page_obj.object_list
+            context["reason_codes"] = reason_codes
+            context["grand_total_amounts"] = grand_total_amounts
+            context["grand_total"] = grand_total
+
+        date_filters = {k: v for k, v in filters.items() if v and k in ("issue_date_from", "issue_date_to")}
+        filter_qs = urlencode(date_filters)
+        base = f"?{filter_qs}&" if filter_qs else "?"
+        context["view_toggle_urls"] = {
+            "items": f"{base}view=items",
+            "invoices": f"{base}view=invoices",
+        }
+        context["querystring"] = urlencode({**date_filters, "view": view_mode})
+        export_base_url = reverse("organization:vat-exemption-report-export", args=[self.organization.pk])
+        context["export_url"] = f"{export_base_url}?{urlencode({**date_filters, 'view': view_mode})}"
+
+        return render(request, self.template_name, context)
+
+
+class VatExemptionReportExportView(LoginRequiredMixin, OrgScopedMixin, InvoiceFilterMixin, View):
+    http_method_names = ["get"]
+
+    def _get_view_mode(self):
+        mode = self.request.GET.get("view", "items")
+        return mode if mode in ("items", "invoices") else "items"
+
+    def get(self, request, *args, **kwargs):
+        self.organization = self.get_organization()
+        view_mode = self._get_view_mode()
+        submissions = list(self.get_queryset())
+
+        if view_mode == "items":
+            rows, total = _build_exemption_item_rows(submissions)
+            workbook = build_vat_exemption_item_workbook(rows, total)
+            filename = f"vat_exemption_items_{slugify(self.organization.name)}_{timezone.localdate().isoformat()}.xlsx"
+        else:
+            invoice_rows, reason_codes, grand_total_amounts, grand_total = _build_exemption_invoice_rows(submissions)
+            workbook = build_vat_exemption_invoice_workbook(invoice_rows, reason_codes, grand_total_amounts, grand_total)
+            filename = f"vat_exemption_invoices_{slugify(self.organization.name)}_{timezone.localdate().isoformat()}.xlsx"
+
+        response = HttpResponse(
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        workbook.save(response)
+        return response

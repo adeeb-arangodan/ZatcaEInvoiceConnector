@@ -13,6 +13,8 @@ from invoices.views_template import (
     InvoiceXmlView,
     InvoiceXmlZipExportView,
     ReturnInvoiceFormView,
+    VatExemptionReportExportView,
+    VatExemptionReportView,
 )
 
 from .views import (
@@ -47,6 +49,16 @@ urlpatterns = [
         "organizations/<int:pk>/invoices/xml/",
         InvoiceXmlZipExportView.as_view(),
         name="invoice-xml-zip-export",
+    ),
+    path(
+        "organizations/<int:pk>/invoices/vat-exemption-report/",
+        VatExemptionReportView.as_view(),
+        name="vat-exemption-report",
+    ),
+    path(
+        "organizations/<int:pk>/invoices/vat-exemption-report/export/",
+        VatExemptionReportExportView.as_view(),
+        name="vat-exemption-report-export",
     ),
     path(
         "organizations/<int:pk>/invoices/<int:invoice_pk>/",

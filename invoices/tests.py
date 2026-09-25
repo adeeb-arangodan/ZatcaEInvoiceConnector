@@ -1886,6 +1886,179 @@ class InvoiceListViewTests(TestCase):
         self.assertEqual(len(rows), 3)  # header + 1 invoice + summary
 
 
+class VatExemptionReportTests(TestCase):
+
+    def _make_org_with_device(self, email='vatreport@example.com', **org_overrides):
+        defaults = {**ORG_DEFAULTS}
+        defaults.update(org_overrides)
+        user = User.objects.create_user(username=email, email=email, password='testpass123')
+        org = Organization.objects.create(email=email, owner_user=user, **defaults)
+        device = Device.objects.create(
+            organization=org,
+            asset_id='ASSET-100',
+            egs_sw_serial_number='SERIAL-200',
+            otp='123456',
+            csid_response=FAKE_CSID,
+        )
+        return org, device, user
+
+    def _make_submission(
+        self, org, device, icv, items, document_type=InvoiceSubmission.DOCUMENT_TYPE_INVOICE,
+        issue_date=None, **payload_overrides,
+    ):
+        payload = {
+            'invoice_number': f'INV-{icv:03d}',
+            'issue_date': issue_date or timezone.localdate().isoformat(),
+            'customer_name': 'Test Customer',
+            'items': items,
+            'doc_level_discount_vat': 0,
+            'doc_level_discount_novat': 0,
+            'advance_paid': 0,
+        }
+        payload.update(payload_overrides)
+        return InvoiceSubmission.objects.create(
+            organization=org,
+            device=device,
+            document_type=document_type,
+            invoice_number=payload['invoice_number'],
+            payload=payload,
+            status=InvoiceSubmission.STATUS_SUBMITTED,
+            icv=icv,
+        )
+
+    def test_only_items_with_exception_reason_are_included(self):
+        org, device, user = self._make_org_with_device()
+        self._make_submission(org, device, 1, items=[
+            {'slno': 1, 'code': 'ITEM-S', 'name': 'Standard', 'qty': '1', 'price': '100', 'vat_type': 'S'},
+            {'slno': 2, 'code': 'ITEM-Z', 'name': 'Medicine', 'qty': '1', 'price': '50', 'vat_type': 'Z',
+             'VatExceptionReason': 'VATEX-SA-35'},
+        ])
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:vat-exemption-report', args=[org.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        rows = response.context['rows']
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['code'], 'ITEM-Z')
+        self.assertEqual(rows[0]['reason'], 'VATEX-SA-35')
+        self.assertEqual(rows[0]['amount_after_discount'], Decimal('50.00'))
+
+    def test_discount_allocated_proportionally_across_non_taxable_lines(self):
+        org, device, user = self._make_org_with_device()
+        self._make_submission(org, device, 1, items=[
+            {'slno': 1, 'code': 'ITEM-A', 'name': 'A', 'qty': '1', 'price': '100', 'vat_type': 'Z',
+             'VatExceptionReason': 'VATEX-SA-35'},
+            {'slno': 2, 'code': 'ITEM-B', 'name': 'B', 'qty': '1', 'price': '200', 'vat_type': 'E',
+             'VatExceptionReason': 'VATEX-SA-HEA'},
+        ], doc_level_discount_novat=30)
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:vat-exemption-report', args=[org.pk]))
+
+        rows = {row['code']: row for row in response.context['rows']}
+        self.assertEqual(rows['ITEM-A']['discount_share'], Decimal('10.00'))
+        self.assertEqual(rows['ITEM-A']['amount_after_discount'], Decimal('90.00'))
+        self.assertEqual(rows['ITEM-B']['discount_share'], Decimal('20.00'))
+        self.assertEqual(rows['ITEM-B']['amount_after_discount'], Decimal('180.00'))
+
+    def test_credit_note_item_is_negated_in_item_view(self):
+        org, device, user = self._make_org_with_device()
+        items = [{'slno': 1, 'code': 'ITEM-Z', 'name': 'Medicine', 'qty': '1', 'price': '100', 'vat_type': 'Z',
+                  'VatExceptionReason': 'VATEX-SA-35'}]
+        self._make_submission(org, device, 1, items=items)
+        self._make_submission(
+            org, device, 2, items=items, document_type=InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE,
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:vat-exemption-report', args=[org.pk]))
+
+        amounts = sorted(row['amount_after_discount'] for row in response.context['rows'])
+        self.assertEqual(amounts, [Decimal('-100.00'), Decimal('100.00')])
+
+    def test_invoice_level_pivot_has_column_per_reason_code(self):
+        org, device, user = self._make_org_with_device()
+        self._make_submission(org, device, 1, items=[
+            {'slno': 1, 'code': 'ITEM-A', 'name': 'A', 'qty': '1', 'price': '100', 'vat_type': 'Z',
+             'VatExceptionReason': 'VATEX-SA-35'},
+            {'slno': 2, 'code': 'ITEM-B', 'name': 'B', 'qty': '1', 'price': '200', 'vat_type': 'E',
+             'VatExceptionReason': 'VATEX-SA-HEA'},
+        ])
+        # Invoice with no exempt items shouldn't appear in the pivot at all.
+        self._make_submission(org, device, 2, items=[
+            {'slno': 1, 'code': 'ITEM-S', 'name': 'Standard', 'qty': '1', 'price': '100', 'vat_type': 'S'},
+        ])
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse('organization:vat-exemption-report', args=[org.pk]), {'view': 'invoices'},
+        )
+
+        self.assertEqual(response.context['reason_codes'], ['VATEX-SA-35', 'VATEX-SA-HEA'])
+        self.assertEqual(len(response.context['rows']), 1)
+        row = response.context['rows'][0]
+        self.assertEqual(row['amounts'], [Decimal('100.00'), Decimal('200.00')])
+        self.assertEqual(row['row_total'], Decimal('300.00'))
+
+    def test_date_range_filtering(self):
+        org, device, user = self._make_org_with_device()
+        item = [{'slno': 1, 'code': 'ITEM-Z', 'name': 'Z', 'qty': '1', 'price': '100', 'vat_type': 'Z',
+                 'VatExceptionReason': 'VATEX-SA-35'}]
+        self._make_submission(org, device, 1, items=item, issue_date='2026-06-24')
+        self._make_submission(org, device, 2, items=item, issue_date='2026-06-25')
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse('organization:vat-exemption-report', args=[org.pk]),
+            {'issue_date_from': '2026-06-25', 'issue_date_to': '2026-06-25'},
+        )
+
+        self.assertEqual(len(response.context['rows']), 1)
+        self.assertEqual(response.context['rows'][0]['invoice_number'], 'INV-002')
+
+    def test_excel_export_items_view(self):
+        org, device, user = self._make_org_with_device()
+        self._make_submission(org, device, 1, items=[
+            {'slno': 1, 'code': 'ITEM-Z', 'name': 'Medicine', 'qty': '1', 'price': '100', 'vat_type': 'Z',
+             'VatExceptionReason': 'VATEX-SA-35'},
+        ])
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('organization:vat-exemption-report-export', args=[org.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response['Content-Type'],
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        workbook = load_workbook(BytesIO(response.content))
+        rows = list(workbook.active.iter_rows(values_only=True))
+        self.assertEqual(rows[0][0], 'Type')
+        self.assertEqual(len(rows), 3)  # header + 1 item + total
+        self.assertEqual(rows[1][6], 'VATEX-SA-35')
+        self.assertEqual(rows[2][-1], Decimal('100.00'))
+
+    def test_excel_export_invoices_view(self):
+        org, device, user = self._make_org_with_device()
+        self._make_submission(org, device, 1, items=[
+            {'slno': 1, 'code': 'ITEM-A', 'name': 'A', 'qty': '1', 'price': '100', 'vat_type': 'Z',
+             'VatExceptionReason': 'VATEX-SA-35'},
+        ])
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse('organization:vat-exemption-report-export', args=[org.pk]), {'view': 'invoices'},
+        )
+
+        workbook = load_workbook(BytesIO(response.content))
+        rows = list(workbook.active.iter_rows(values_only=True))
+        self.assertEqual(rows[0], ('Type', 'Invoice Number', 'Issue Date', 'Customer', 'VATEX-SA-35', 'Total'))
+        self.assertEqual(rows[1][1], 'INV-001')
+        self.assertEqual(rows[1][4], Decimal('100.00'))
+        self.assertEqual(rows[-1][4], Decimal('100.00'))
+
+
 class InvoiceXmlZipExportTests(TestCase):
 
     def _make_org_with_device(self, email='owner@example.com', **org_overrides):

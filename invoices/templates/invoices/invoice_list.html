@@ -18,6 +18,8 @@
         <a href="{% url 'organization:dashboard' organization.pk %}">Back to dashboard</a>
         &nbsp;|&nbsp;
         <a href="{% url 'organization:failed-submission-list' organization.pk %}">Failed Submissions</a>
+        &nbsp;|&nbsp;
+        <a href="{% url 'organization:vat-exemption-report' organization.pk %}">VAT Exemption Report</a>
     </p>
 
     <h1>Invoices - {{ organization.name }}</h1>
