@@ -8,9 +8,9 @@ Nothing in the live project has been changed. Two new sibling files were
 added for you to review and manually swap in when ready:
 
 - `ZatcaEInvoiceConnector/settings.postgresql.py` — identical to
-  `settings.py` except the `DATABASES` block now points at PostgreSQL.
+`settings.py` except the `DATABASES` block now points at PostgreSQL.
 - `requirements.postgresql.txt` — identical to `requirements.txt` plus the
-  `psycopg[binary]` driver.
+`psycopg[binary]` driver.
 
 ## Why Postgres over SQLite for this app specifically
 
@@ -46,9 +46,9 @@ common choice) and run it. During setup:
 
 - Set a password for the `postgres` superuser — record it somewhere safe.
 - Default port `5432` is fine (change it only if it conflicts with something
-  else already running).
+else already running).
 - Let it install pgAdmin (optional GUI) if you want a visual tool for
-  inspecting the database later.
+inspecting the database later.
 
 Verify it's running:
 
