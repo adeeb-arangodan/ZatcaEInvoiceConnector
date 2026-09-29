@@ -1,3 +1,5 @@
+from decimal import ROUND_HALF_UP, Decimal
+
 from .models import InvoiceSubmission
 from .pipeline import process_invoice_submission
 
@@ -5,6 +7,19 @@ from .pipeline import process_invoice_submission
 class DuplicateReturnNumberError(Exception):
     """Raised when the caller-supplied system_return_number collides with an
     existing credit note invoice number for this organization."""
+
+
+def _bucket_amount(items, taxable):
+    return sum(
+        (Decimal(str(i['qty'])) * Decimal(str(i['price'])) for i in items if (i['vat_type'] == 'S') == taxable),
+        Decimal('0'),
+    )
+
+
+def _prorate(original_amount, numerator, denominator):
+    if not denominator:
+        return Decimal('0.00')
+    return (Decimal(str(original_amount)) * numerator / denominator).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
 
 def build_return_payload(original_invoice, system_return_number='', reason=''):
@@ -72,13 +87,28 @@ def build_custom_return_payload(original_invoice, items, issue_date, issue_time,
     payload['issue_date'] = issue_date.isoformat() if hasattr(issue_date, 'isoformat') else issue_date
     payload['issue_time'] = issue_time.strftime('%H:%M:%S') if hasattr(issue_time, 'strftime') else issue_time
 
-    # A custom return only reverses some of the original items, so the whole
-    # invoice's document-level discount/advance-payment amounts (computed
-    # against the full item set) don't carry over — they'd overstate the
-    # discount against this smaller subset.
-    payload['doc_level_discount_vat'] = 0
-    payload['doc_level_discount_novat'] = 0
-    payload['advance_paid'] = 0
+    # A custom return may only reverse some of the original items, so the
+    # whole invoice's document-level discount/advance-payment amounts
+    # (computed against the full item set) don't carry over as-is — each is
+    # scaled down to the fraction of its own bucket actually being returned
+    # (a full-item return therefore keeps the full discount; a genuine
+    # partial return gets a proportional share instead of losing it all).
+    original_items = original_invoice.payload.get('items', [])
+    original_taxable = _bucket_amount(original_items, True)
+    original_nontaxable = _bucket_amount(original_items, False)
+    returned_taxable = _bucket_amount(items, True)
+    returned_nontaxable = _bucket_amount(items, False)
+
+    payload['doc_level_discount_vat'] = _prorate(
+        original_invoice.payload.get('doc_level_discount_vat', 0), returned_taxable, original_taxable,
+    )
+    payload['doc_level_discount_novat'] = _prorate(
+        original_invoice.payload.get('doc_level_discount_novat', 0), returned_nontaxable, original_nontaxable,
+    )
+    payload['advance_paid'] = _prorate(
+        original_invoice.payload.get('advance_paid', 0),
+        returned_taxable + returned_nontaxable, original_taxable + original_nontaxable,
+    )
 
     note_parts = [f"Custom return against invoice {payload['billing_reference']}"]
     if reason:

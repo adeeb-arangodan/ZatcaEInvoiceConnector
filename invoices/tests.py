@@ -1027,6 +1027,27 @@ class CustomReturnInvoiceFlowTests(TestCase):
         ],
     }
 
+    DISCOUNTED_NONTAXABLE_PAYLOAD = {
+        **VALID_PAYLOAD,
+        'items': [
+            {'slno': 1, 'code': 'ITEM-Z1', 'name': 'Lab Test 1', 'qty': '1.0000', 'price': '25.0000', 'vat_type': 'Z'},
+            {'slno': 2, 'code': 'ITEM-Z2', 'name': 'Lab Test 2', 'qty': '1.0000', 'price': '25.0000', 'vat_type': 'Z'},
+            {'slno': 3, 'code': 'ITEM-Z3', 'name': 'Lab Test 3', 'qty': '1.0000', 'price': '50.0000', 'vat_type': 'Z'},
+            {'slno': 4, 'code': 'ITEM-Z4', 'name': 'Lab Test 4', 'qty': '1.0000', 'price': '50.0000', 'vat_type': 'Z'},
+        ],
+        'doc_level_discount_novat': '50.00',
+    }
+
+    DISCOUNTED_MIXED_PAYLOAD = {
+        **VALID_PAYLOAD,
+        'items': [
+            {'slno': 1, 'code': 'ITEM-S1', 'name': 'Consultation', 'qty': '1.0000', 'price': '100.0000', 'vat_type': 'S'},
+            {'slno': 2, 'code': 'ITEM-Z1', 'name': 'Lab Test', 'qty': '1.0000', 'price': '100.0000', 'vat_type': 'Z'},
+        ],
+        'doc_level_discount_vat': '20.00',
+        'doc_level_discount_novat': '10.00',
+    }
+
     def _make_org_with_signing_device(self, email='owner@example.com', **org_overrides):
         defaults = {**ORG_DEFAULTS}
         defaults.update(org_overrides)
@@ -1199,6 +1220,68 @@ class CustomReturnInvoiceFlowTests(TestCase):
         self.assertEqual(
             InvoiceSubmission.objects.filter(document_type=InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE).count(), 0,
         )
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_returning_all_items_preserves_the_full_discount(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, _user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.DISCOUNTED_NONTAXABLE_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        credit_note = create_custom_return_credit_note(
+            org, device, invoice,
+            items=invoice.payload['items'],
+            issue_date=date(2026, 7, 20),
+            issue_time=time(23, 59),
+            reason='full return via custom form',
+        )
+
+        self.assertEqual(credit_note.payload['doc_level_discount_novat'], '50.00')
+        totals = _compute_totals(
+            credit_note.payload['items'],
+            credit_note.payload['doc_level_discount_vat'],
+            credit_note.payload['doc_level_discount_novat'],
+            credit_note.payload['advance_paid'],
+        )
+        self.assertEqual(totals['tax_inclusive'], Decimal('100.00'))
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_partial_return_scales_the_discount_proportionally(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, _user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.DISCOUNTED_NONTAXABLE_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        # Return just the first two items: 50 of the invoice's 150 non-taxable total.
+        credit_note = create_custom_return_credit_note(
+            org, device, invoice,
+            items=invoice.payload['items'][:2],
+            issue_date=date(2026, 7, 20),
+            issue_time=time(23, 59),
+            reason='partial return',
+        )
+
+        # 50.00 * (50 / 150), rounded half-up to 2dp — neither zeroed nor the full discount.
+        self.assertEqual(credit_note.payload['doc_level_discount_novat'], '16.67')
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_returning_only_taxable_items_zeroes_the_nontaxable_discount(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, _user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.DISCOUNTED_MIXED_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        s_item = next(i for i in invoice.payload['items'] if i['vat_type'] == 'S')
+        credit_note = create_custom_return_credit_note(
+            org, device, invoice,
+            items=[s_item],
+            issue_date=date(2026, 7, 20),
+            issue_time=time(23, 59),
+            reason='taxable item only',
+        )
+
+        self.assertEqual(credit_note.payload['doc_level_discount_vat'], '20.00')
+        self.assertEqual(credit_note.payload['doc_level_discount_novat'], '0.00')
 
 
 class InvoiceNumbersByDateViewTests(TestCase):
