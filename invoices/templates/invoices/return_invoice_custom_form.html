@@ -63,15 +63,13 @@
             </tbody>
         </table>
 
-        {% if summary_totals %}
-            <p>
-                <strong>Total Amount:</strong> {{ summary_totals.line_extension }}
-                &nbsp;|&nbsp;
-                <strong>Total Tax:</strong> {{ summary_totals.vat_total }}
-                &nbsp;|&nbsp;
-                <strong>Net with Tax:</strong> {{ summary_totals.tax_inclusive }}
-            </p>
-        {% endif %}
+        <p id="return-summary">
+            <strong>Total Amount:</strong> <span id="summary-total-amount">{{ summary_totals.line_extension|default:"0.00" }}</span>
+            &nbsp;|&nbsp;
+            <strong>Total Tax:</strong> <span id="summary-total-tax">{{ summary_totals.vat_total|default:"0.00" }}</span>
+            &nbsp;|&nbsp;
+            <strong>Net with Tax:</strong> <span id="summary-net-with-tax">{{ summary_totals.tax_inclusive|default:"0.00" }}</span>
+        </p>
 
         <p>
             <label>Issue Date (defaults to today)
@@ -98,5 +96,46 @@
     </form>
 
     <p><a href="{% url 'organization:invoice-list' organization.pk %}">Cancel</a></p>
+
+    <script>
+        // Client-side live preview only. The authoritative totals are always
+        // computed server-side (Decimal precision) on submit — this just
+        // saves a round trip for the user to see the effect of an edit.
+        document.addEventListener('DOMContentLoaded', function () {
+            var VAT_RATE = 0.15;
+            var form = document.querySelector('form');
+            if (!form) return;
+
+            function recalcTotals() {
+                var totalAmount = 0;
+                var totalTax = 0;
+                form.querySelectorAll('tbody tr').forEach(function (row) {
+                    var includeInput = row.querySelector('input[name$="-include"]');
+                    if (!includeInput || !includeInput.checked) return;
+
+                    var qtyInput = row.querySelector('input[name$="-qty"]');
+                    var priceInput = row.querySelector('input[name$="-price"]');
+                    var vatTypeInput = row.querySelector('input[name$="-vat_type"]');
+
+                    var qty = parseFloat(qtyInput ? qtyInput.value : '') || 0;
+                    var price = parseFloat(priceInput ? priceInput.value : '') || 0;
+                    var vatType = vatTypeInput ? vatTypeInput.value : '';
+
+                    var gross = qty * price;
+                    var tax = vatType === 'S' ? gross * VAT_RATE : 0;
+                    totalAmount += gross;
+                    totalTax += tax;
+                });
+
+                document.getElementById('summary-total-amount').textContent = totalAmount.toFixed(2);
+                document.getElementById('summary-total-tax').textContent = totalTax.toFixed(2);
+                document.getElementById('summary-net-with-tax').textContent = (totalAmount + totalTax).toFixed(2);
+            }
+
+            form.addEventListener('input', recalcTotals);
+            form.addEventListener('change', recalcTotals);
+            recalcTotals();
+        });
+    </script>
 </body>
 </html>
