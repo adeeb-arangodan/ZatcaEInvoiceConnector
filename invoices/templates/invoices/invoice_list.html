@@ -116,6 +116,10 @@
                                 <a href="{% url 'organization:invoice-return' organization.pk invoice.pk %}">Full Return (Invoice Date)</a>
                                 &nbsp;|&nbsp;
                                 <a href="{% url 'organization:invoice-return-custom' organization.pk invoice.pk %}">Custom Return</a>
+                                &nbsp;|&nbsp;
+                                <a href="{% url 'organization:invoice-debit-note' organization.pk invoice.pk %}">Debit Note</a>
+                            {% elif invoice.document_type == 'credit_note' and invoice.status == 'submitted' %}
+                                <a href="{% url 'organization:invoice-debit-note' organization.pk invoice.pk %}">Debit Note</a>
                             {% elif invoice.status == 'not_submitted' %}
                                 <form method="post" action="{% url 'organization:invoice-resubmit' organization.pk invoice.pk %}" style="display: inline;">
                                     {% csrf_token %}

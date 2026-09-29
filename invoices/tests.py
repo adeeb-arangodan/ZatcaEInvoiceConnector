@@ -29,6 +29,7 @@ from .serializers import InvoiceSubmissionSerializer
 from .services import (
     DuplicateReturnNumberError,
     create_custom_return_credit_note,
+    create_debit_note,
     create_return_credit_note,
 )
 from .submission import submit_to_zatca
@@ -1282,6 +1283,279 @@ class CustomReturnInvoiceFlowTests(TestCase):
 
         self.assertEqual(credit_note.payload['doc_level_discount_vat'], '20.00')
         self.assertEqual(credit_note.payload['doc_level_discount_novat'], '0.00')
+
+
+class DebitNoteTests(TestCase):
+    """Exercises the debit-note correction flow: referencing an invoice or
+    credit note, freeform correction lines, and the blank-row handling."""
+
+    TWO_ITEM_PAYLOAD = {
+        **VALID_PAYLOAD,
+        'items': [
+            {'slno': 1, 'code': 'ITEM-001', 'name': 'Consultation', 'qty': '1.0000',
+             'price': '100.0000', 'vat_type': 'S'},
+        ],
+    }
+
+    def _make_org_with_signing_device(self, email='debitnote@example.com', **org_overrides):
+        defaults = {**ORG_DEFAULTS}
+        defaults.update(org_overrides)
+        user = User.objects.create_user(username=email, email=email, password='testpass123')
+        org = Organization.objects.create(email=email, owner_user=user, **defaults)
+        device = Device.objects.create(
+            organization=org,
+            asset_id='ASSET-100',
+            egs_sw_serial_number='SERIAL-200',
+            otp='123456',
+            csid_response=FAKE_CSID,
+        )
+        private_key = ec_module.generate_private_key(ec_module.SECP256R1())
+        pem = private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode('ascii')
+        DeviceKeyMaterial.objects.create(device=device, private_key_pem=encrypt_private_key(pem))
+        return org, device, user
+
+    def _validated(self, payload, org):
+        serializer = InvoiceSubmissionSerializer(data=payload, organization=org)
+        serializer.is_valid(raise_exception=True)
+        return serializer.validated_data, serializer.get_resolved_device()
+
+    def _formset_data(self, rows):
+        data = {
+            'form-TOTAL_FORMS': '5',
+            'form-INITIAL_FORMS': '0',
+            'form-MIN_NUM_FORMS': '0',
+            'form-MAX_NUM_FORMS': '1000',
+        }
+        for i in range(5):
+            row = rows[i] if i < len(rows) else {}
+            data[f'form-{i}-description'] = row.get('description', '')
+            data[f'form-{i}-amount'] = row.get('amount', '')
+            data[f'form-{i}-vat_type'] = row.get('vat_type', '')
+            data[f'form-{i}-vat_exception_reason'] = row.get('vat_exception_reason', '')
+        return data
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_create_debit_note_against_an_invoice(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, _user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.TWO_ITEM_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        debit_note = create_debit_note(
+            org, device, invoice,
+            items=[{'slno': 1, 'code': 'CORRECTION', 'name': 'Missed discount correction',
+                    'qty': '1.0000', 'price': '50.0000', 'vat_type': 'S', 'VatExceptionReason': ''}],
+            issue_date=date(2026, 9, 29),
+            issue_time=time(23, 59),
+            reason='Correcting undercharge',
+        )
+
+        self.assertEqual(debit_note.payload['invoice_type_code'], '383')
+        self.assertEqual(debit_note.document_type, InvoiceSubmission.DOCUMENT_TYPE_DEBIT_NOTE)
+        self.assertEqual(debit_note.invoice_number, f'DN-{debit_note.icv}')
+        self.assertEqual(debit_note.original_invoice_id, invoice.pk)
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_create_debit_note_against_a_credit_note(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, _user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.TWO_ITEM_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+        credit_note = create_return_credit_note(org, device, invoice, reason='return')
+
+        debit_note = create_debit_note(
+            org, device, credit_note,
+            items=[{'slno': 1, 'code': 'CORRECTION', 'name': 'Correction', 'qty': '1.0000',
+                    'price': '50.0000', 'vat_type': 'Z', 'VatExceptionReason': 'VATEX-SA-35'}],
+            issue_date=date(2026, 9, 29),
+            issue_time=time(23, 59),
+            reason='Correcting overstated credit',
+        )
+
+        self.assertEqual(debit_note.original_invoice_id, credit_note.pk)
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_mixed_taxable_and_nontaxable_lines(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, _user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.TWO_ITEM_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        debit_note = create_debit_note(
+            org, device, invoice,
+            items=[
+                {'slno': 1, 'code': 'CORRECTION', 'name': 'Taxable correction', 'qty': '1.0000',
+                 'price': '40.0000', 'vat_type': 'S', 'VatExceptionReason': ''},
+                {'slno': 2, 'code': 'CORRECTION', 'name': 'Zero-rated correction', 'qty': '1.0000',
+                 'price': '10.0000', 'vat_type': 'Z', 'VatExceptionReason': 'VATEX-SA-35'},
+            ],
+            issue_date=date(2026, 9, 29),
+            issue_time=time(23, 59),
+            reason='Mixed correction',
+        )
+
+        totals = _compute_totals(
+            debit_note.payload['items'],
+            debit_note.payload['doc_level_discount_vat'],
+            debit_note.payload['doc_level_discount_novat'],
+            debit_note.payload['advance_paid'],
+        )
+        self.assertEqual(totals['vat_total'], Decimal('6.00'))
+        self.assertEqual(totals['tax_inclusive'], Decimal('56.00'))
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_duplicate_system_debit_note_number_raises(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, _user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.TWO_ITEM_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+        items = [{'slno': 1, 'code': 'CORRECTION', 'name': 'Correction', 'qty': '1.0000',
+                  'price': '50.0000', 'vat_type': 'S', 'VatExceptionReason': ''}]
+
+        create_debit_note(
+            org, device, invoice, items=items, issue_date=date(2026, 9, 29), issue_time=time(23, 59),
+            system_debit_note_number='SYS-DN-1', reason='first',
+        )
+
+        with self.assertRaises(DuplicateReturnNumberError):
+            create_debit_note(
+                org, device, invoice, items=items, issue_date=date(2026, 9, 29), issue_time=time(23, 59),
+                system_debit_note_number='SYS-DN-1', reason='second',
+            )
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_view_rejects_referencing_a_debit_note(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.TWO_ITEM_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+        debit_note = create_debit_note(
+            org, device, invoice,
+            items=[{'slno': 1, 'code': 'CORRECTION', 'name': 'Correction', 'qty': '1.0000',
+                    'price': '50.0000', 'vat_type': 'S', 'VatExceptionReason': ''}],
+            issue_date=date(2026, 9, 29), issue_time=time(23, 59), reason='first',
+        )
+
+        self.client.force_login(user)
+        response = self.client.get(reverse('organization:invoice-debit-note', args=[org.pk, debit_note.pk]))
+
+        self.assertEqual(response.status_code, 404)
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_view_get_defaults_issue_date_and_time(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.TWO_ITEM_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        self.client.force_login(user)
+        response = self.client.get(reverse('organization:invoice-debit-note', args=[org.pk, invoice.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['form'].initial['issue_date'], timezone.localdate())
+        self.assertEqual(response.context['form'].initial['issue_time'], time(23, 59))
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_view_post_creates_debit_note_and_skips_blank_rows(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.TWO_ITEM_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        self.client.force_login(user)
+        data = self._formset_data([{'description': 'Missed discount', 'amount': '50.00', 'vat_type': 'S'}])
+        data.update({
+            'issue_date': '2026-09-29', 'issue_time': '23:59',
+            'doc_level_discount_vat': '', 'doc_level_discount_novat': '',
+            'system_debit_note_number': '', 'reason': 'Correcting undercharge',
+        })
+        response = self.client.post(
+            reverse('organization:invoice-debit-note', args=[org.pk, invoice.pk]), data,
+        )
+
+        self.assertRedirects(response, reverse('organization:invoice-list', args=[org.pk]))
+        debit_note = InvoiceSubmission.objects.get(document_type=InvoiceSubmission.DOCUMENT_TYPE_DEBIT_NOTE)
+        self.assertEqual(len(debit_note.payload['items']), 1)
+        self.assertEqual(debit_note.payload['items'][0]['name'], 'Missed discount')
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_view_post_with_partial_row_shows_error_and_creates_nothing(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.TWO_ITEM_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        self.client.force_login(user)
+        data = self._formset_data([{'description': 'Missing amount', 'amount': '', 'vat_type': 'S'}])
+        data.update({
+            'issue_date': '2026-09-29', 'issue_time': '23:59',
+            'doc_level_discount_vat': '', 'doc_level_discount_novat': '',
+            'system_debit_note_number': '', 'reason': 'Correcting undercharge',
+        })
+        response = self.client.post(
+            reverse('organization:invoice-debit-note', args=[org.pk, invoice.pk]), data,
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(
+            InvoiceSubmission.objects.filter(document_type=InvoiceSubmission.DOCUMENT_TYPE_DEBIT_NOTE).count(), 0,
+        )
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_view_post_with_no_rows_filled_shows_error(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.TWO_ITEM_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        self.client.force_login(user)
+        data = self._formset_data([])
+        data.update({
+            'issue_date': '2026-09-29', 'issue_time': '23:59',
+            'doc_level_discount_vat': '', 'doc_level_discount_novat': '',
+            'system_debit_note_number': '', 'reason': 'Correcting undercharge',
+        })
+        response = self.client.post(
+            reverse('organization:invoice-debit-note', args=[org.pk, invoice.pk]), data,
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(
+            InvoiceSubmission.objects.filter(document_type=InvoiceSubmission.DOCUMENT_TYPE_DEBIT_NOTE).count(), 0,
+        )
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_invoice_list_shows_debit_note_link_for_invoice_and_credit_note_not_debit_note(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.TWO_ITEM_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+        credit_note = create_return_credit_note(org, device, invoice, reason='return')
+        debit_note = create_debit_note(
+            org, device, invoice,
+            items=[{'slno': 1, 'code': 'CORRECTION', 'name': 'Correction', 'qty': '1.0000',
+                    'price': '10.0000', 'vat_type': 'S', 'VatExceptionReason': ''}],
+            issue_date=date(2026, 9, 29), issue_time=time(23, 59), reason='correction',
+        )
+
+        self.client.force_login(user)
+        response = self.client.get(
+            reverse('organization:invoice-list', args=[org.pk]),
+            {'issue_date_from': '2020-01-01', 'issue_date_to': '2030-01-01'},
+        )
+
+        content = response.content.decode()
+        invoice_debit_url = reverse('organization:invoice-debit-note', args=[org.pk, invoice.pk])
+        credit_note_debit_url = reverse('organization:invoice-debit-note', args=[org.pk, credit_note.pk])
+        debit_note_debit_url = reverse('organization:invoice-debit-note', args=[org.pk, debit_note.pk])
+
+        self.assertIn(invoice_debit_url, content)
+        self.assertIn(credit_note_debit_url, content)
+        self.assertNotIn(debit_note_debit_url, content)
 
 
 class InvoiceNumbersByDateViewTests(TestCase):

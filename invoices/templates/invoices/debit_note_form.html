@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Debit Note - {{ source_document.payload.invoice_number }}</title>
+    <style>
+        table { border-collapse: collapse; width: 100%; margin-bottom: 16px; }
+        td, th { border: 1px solid #999; padding: 6px 8px; vertical-align: top; }
+        input[type="number"], input[type="text"] { width: 140px; }
+    </style>
+</head>
+<body>
+    <h1>Debit Note - {{ source_document.get_document_type_display }} {{ source_document.payload.invoice_number }}</h1>
+    <p>Customer: {{ source_document.payload.customer_name }}</p>
+    <p>
+        Enter one line per correction amount. Leave a row blank if you don't need it.
+        Pick the VAT type that matches what's being corrected — a single debit note
+        can mix taxable and non-taxable correction lines.
+    </p>
+
+    {% if form.non_field_errors %}
+        <p style="color: red;">{{ form.non_field_errors }}</p>
+    {% endif %}
+    {% if formset.non_form_errors %}
+        <p style="color: red;">{{ formset.non_form_errors }}</p>
+    {% endif %}
+
+    <form method="post">
+        {% csrf_token %}
+        {{ formset.management_form }}
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Description</th>
+                    <th>Amount</th>
+                    <th>VAT Type</th>
+                    <th>VAT Exception Reason</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for line_form in formset %}
+                    <tr>
+                        <td>{{ line_form.description }}{{ line_form.description.errors }}</td>
+                        <td>{{ line_form.amount }}{{ line_form.amount.errors }}</td>
+                        <td>{{ line_form.vat_type }}{{ line_form.vat_type.errors }}</td>
+                        <td>{{ line_form.vat_exception_reason }}{{ line_form.vat_exception_reason.errors }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <p>
+            <label>Issue Date (defaults to today)
+                {{ form.issue_date }}{{ form.issue_date.errors }}
+            </label>
+        </p>
+        <p>
+            <label>Issue Time (defaults to 11:59 PM)
+                {{ form.issue_time }}{{ form.issue_time.errors }}
+            </label>
+        </p>
+        <p>
+            <label>{{ form.doc_level_discount_vat.label }}
+                {{ form.doc_level_discount_vat }}{{ form.doc_level_discount_vat.errors }}
+            </label>
+        </p>
+        <p>
+            <label>{{ form.doc_level_discount_novat.label }}
+                {{ form.doc_level_discount_novat }}{{ form.doc_level_discount_novat.errors }}
+            </label>
+        </p>
+        <p>
+            <label>{{ form.system_debit_note_number.label }}
+                {{ form.system_debit_note_number }}{{ form.system_debit_note_number.errors }}
+            </label>
+        </p>
+        <p>
+            <label>{{ form.reason.label }}<br>
+                {{ form.reason }}{{ form.reason.errors }}
+            </label>
+        </p>
+
+        <button type="submit">Create Debit Note</button>
+    </form>
+
+    <p><a href="{% url 'organization:invoice-list' organization.pk %}">Cancel</a></p>
+</body>
+</html>

@@ -30,6 +30,7 @@ from .serializers import InvoiceSubmissionSerializer
 from .services import (
     DuplicateReturnNumberError,
     create_custom_return_credit_note,
+    create_debit_note,
     create_return_credit_note,
 )
 from .xml_builder import VAT_RATE, _compute_totals
@@ -790,3 +791,132 @@ class VatExemptionReportExportView(LoginRequiredMixin, OrgScopedMixin, InvoiceFi
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         workbook.save(response)
         return response
+
+
+class DebitNoteLineForm(forms.Form):
+    description = forms.CharField(required=False, label="Description")
+    amount = forms.DecimalField(required=False, max_digits=15, decimal_places=2, label="Amount")
+    vat_type = forms.ChoiceField(
+        required=False,
+        choices=[('S', 'Standard (15%)'), ('Z', 'Zero-rated'), ('E', 'Exempt'), ('O', 'Out of scope')],
+        initial='S',
+        label="VAT Type",
+    )
+    vat_exception_reason = forms.CharField(
+        required=False, label="VAT Exception Reason (for Zero-rated/Exempt)",
+    )
+
+
+DebitNoteLineFormSet = forms.formset_factory(DebitNoteLineForm, extra=5)
+
+
+class DebitNoteForm(forms.Form):
+    issue_date = forms.DateField(widget=forms.DateInput(attrs={"type": "date"}))
+    issue_time = forms.TimeField(widget=forms.TimeInput(attrs={"type": "time"}))
+    doc_level_discount_vat = forms.DecimalField(
+        required=False, max_digits=15, decimal_places=2, initial=0, label="Discount on taxable items (optional)",
+    )
+    doc_level_discount_novat = forms.DecimalField(
+        required=False, max_digits=15, decimal_places=2, initial=0, label="Discount on non-taxable items (optional)",
+    )
+    system_debit_note_number = forms.CharField(required=False, label="System reference number (optional)")
+    reason = forms.CharField(widget=forms.Textarea, label="Reason for debit note")
+
+
+class DebitNoteFormView(LoginRequiredMixin, OrgScopedMixin, View):
+    template_name = "invoices/debit_note_form.html"
+
+    def dispatch(self, request, *args, **kwargs):
+        self.source_document = get_object_or_404(
+            InvoiceSubmission,
+            pk=self.kwargs["invoice_pk"],
+            organization_id=self.kwargs["pk"],
+            document_type__in=[
+                InvoiceSubmission.DOCUMENT_TYPE_INVOICE,
+                InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE,
+            ],
+        )
+        return super().dispatch(request, *args, **kwargs)
+
+    def _render(self, request, form, formset, status=200):
+        return render(
+            request,
+            self.template_name,
+            {
+                "organization": self.get_organization(),
+                "source_document": self.source_document,
+                "form": form,
+                "formset": formset,
+            },
+            status=status,
+        )
+
+    def get(self, request, *args, **kwargs):
+        form = DebitNoteForm(initial={"issue_date": timezone.localdate(), "issue_time": time(23, 59)})
+        formset = DebitNoteLineFormSet()
+        return self._render(request, form, formset)
+
+    def post(self, request, *args, **kwargs):
+        organization = self.get_organization()
+        form = DebitNoteForm(request.POST)
+        formset = DebitNoteLineFormSet(request.POST)
+
+        if not (form.is_valid() and formset.is_valid()):
+            return self._render(request, form, formset, status=422)
+
+        items = []
+        for i, cleaned in enumerate(formset.cleaned_data, start=1):
+            description = cleaned.get('description')
+            amount = cleaned.get('amount')
+            if not description and amount is None:
+                continue
+            if not description or amount is None:
+                form.add_error(None, f"Line {i}: both description and amount are required.")
+                return self._render(request, form, formset, status=422)
+            items.append({
+                'slno': len(items) + 1,
+                'code': 'CORRECTION',
+                'name': description,
+                'qty': '1.0000',
+                'price': str(amount),
+                'vat_type': cleaned.get('vat_type') or 'S',
+                'VatExceptionReason': cleaned.get('vat_exception_reason') or '',
+            })
+
+        if not items:
+            form.add_error(None, "Add at least one line with a description and amount.")
+            return self._render(request, form, formset, status=422)
+
+        device = self.source_document.device
+        if not device.csid_response or "binarySecurityToken" not in device.csid_response:
+            messages.error(request, "Originating device has no valid compliance CSID.")
+            return redirect("organization:invoice-list", pk=organization.pk)
+
+        try:
+            debit_note = create_debit_note(
+                organization=organization,
+                device=device,
+                source_document=self.source_document,
+                items=items,
+                issue_date=form.cleaned_data["issue_date"],
+                issue_time=form.cleaned_data["issue_time"],
+                doc_level_discount_vat=form.cleaned_data.get("doc_level_discount_vat") or 0,
+                doc_level_discount_novat=form.cleaned_data.get("doc_level_discount_novat") or 0,
+                system_debit_note_number=form.cleaned_data["system_debit_note_number"],
+                reason=form.cleaned_data["reason"],
+            )
+        except DuplicateReturnNumberError as exc:
+            form.add_error("system_debit_note_number", str(exc))
+            return self._render(request, form, formset, status=422)
+        except InvoiceSubmissionRejected as exc:
+            messages.error(
+                request,
+                f"ZATCA rejected this debit note: {exc.failure.zatca_response}. "
+                "Correct the payload and resubmit from Failed Submissions.",
+            )
+            return redirect("organization:invoice-list", pk=organization.pk)
+
+        messages.success(
+            request, f"Debit note created and submitted to ZATCA (ICV {debit_note.icv})."
+        )
+        return redirect("organization:invoice-list", pk=organization.pk)

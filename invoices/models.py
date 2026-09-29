@@ -56,7 +56,9 @@ class InvoiceSubmission(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    # Only populated for document_type=credit_note (the return-invoice flow).
+    # Populated for document_type=credit_note (the return-invoice flow) and
+    # document_type=debit_note (the correction flow) — points at whatever
+    # invoice or credit note the credit/debit note was issued against.
     original_invoice = models.ForeignKey(
         'self',
         null=True,
