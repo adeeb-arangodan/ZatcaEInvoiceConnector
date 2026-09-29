@@ -63,6 +63,16 @@
             </tbody>
         </table>
 
+        {% if summary_totals %}
+            <p>
+                <strong>Total Amount:</strong> {{ summary_totals.line_extension }}
+                &nbsp;|&nbsp;
+                <strong>Total Tax:</strong> {{ summary_totals.vat_total }}
+                &nbsp;|&nbsp;
+                <strong>Net with Tax:</strong> {{ summary_totals.tax_inclusive }}
+            </p>
+        {% endif %}
+
         <p>
             <label>Issue Date (defaults to today)
                 {{ form.issue_date }}{{ form.issue_date.errors }}

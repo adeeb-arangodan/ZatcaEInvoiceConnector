@@ -1351,6 +1351,24 @@ class CustomReturnInvoiceFlowTests(TestCase):
         self.assertEqual(initial_prices[2], Decimal('90.0000'))
 
     @patch('invoices.pipeline.submit_to_zatca')
+    def test_view_get_shows_summary_totals_for_the_default_full_return(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.DISCOUNTED_MIXED_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        self.client.force_login(user)
+        response = self.client.get(reverse('organization:invoice-return-custom', args=[org.pk, invoice.pk]))
+
+        summary = response.context['summary_totals']
+        self.assertEqual(summary['line_extension'], Decimal('170.00'))
+        self.assertEqual(summary['vat_total'], Decimal('12.00'))
+        self.assertEqual(summary['tax_inclusive'], Decimal('182.00'))
+        self.assertContains(response, 'Total Amount:')
+        self.assertContains(response, 'Total Tax:')
+        self.assertContains(response, 'Net with Tax:')
+
+    @patch('invoices.pipeline.submit_to_zatca')
     def test_view_post_with_prefilled_discounted_price_yields_correct_total(self, mock_submit):
         mock_submit.return_value = {'status_code': 200}
         org, device, user = self._make_org_with_signing_device()

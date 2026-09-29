@@ -514,6 +514,32 @@ class CustomReturnInvoiceFormView(LoginRequiredMixin, OrgScopedMixin, View):
             for item in self.invoice.payload.get("items", [])
         ]
 
+    def _summary_totals(self, formset):
+        # Reflects whatever's currently in the formset — the pre-filled
+        # defaults on a fresh GET, or the submitted values on a validation
+        # error re-render — not a live/JS-updated preview (this app's forms
+        # are plain HTML with no JS), but always the state actually on screen.
+        items = []
+        for line_form in formset.forms:
+            if not line_form['include'].value():
+                continue
+            qty = line_form['qty'].value()
+            price = line_form['price'].value()
+            vat_type = line_form['vat_type'].value()
+            if not qty or not price or not vat_type:
+                continue
+            try:
+                items.append({'qty': qty, 'price': price, 'vat_type': vat_type})
+            except (TypeError, ValueError):
+                continue
+
+        if not items:
+            return None
+        try:
+            return _compute_totals(items, doc_level_discount_vat=0, doc_level_discount_novat=0, advance_paid=0)
+        except (TypeError, ValueError, ArithmeticError):
+            return None
+
     def _render(self, request, form, formset, status=200):
         return render(
             request,
@@ -523,6 +549,7 @@ class CustomReturnInvoiceFormView(LoginRequiredMixin, OrgScopedMixin, View):
                 "invoice": self.invoice,
                 "form": form,
                 "formset": formset,
+                "summary_totals": self._summary_totals(formset),
             },
             status=status,
         )
