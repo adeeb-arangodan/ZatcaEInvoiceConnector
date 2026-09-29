@@ -16,7 +16,9 @@
     <p>
         Uncheck any item you are not returning, and adjust the quantity/unit price
         of the item(s) you are returning. VAT and totals are calculated
-        automatically from what you submit here.
+        automatically from what you submit here. Unit Price already accounts
+        for the original invoice's discount, so it reflects what was actually
+        charged per unit, not the catalog price.
     </p>
 
     {% if form.non_field_errors %}
@@ -37,7 +39,7 @@
                     <th>Item Code</th>
                     <th>Item</th>
                     <th>Qty</th>
-                    <th>Unit Price</th>
+                    <th>Unit Price (after discount)</th>
                     <th>VAT %</th>
                 </tr>
             </thead>

@@ -28,6 +28,7 @@ from .pipeline import InvoiceSubmissionRejected, process_invoice_submission
 from .serializers import InvoiceSubmissionSerializer
 from .services import (
     DuplicateReturnNumberError,
+    compute_item_unit_prices_after_discount,
     create_custom_return_credit_note,
     create_debit_note,
     create_return_credit_note,
@@ -1222,22 +1223,50 @@ class CustomReturnInvoiceFlowTests(TestCase):
             InvoiceSubmission.objects.filter(document_type=InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE).count(), 0,
         )
 
+    def test_compute_item_unit_prices_after_discount_nontaxable(self):
+        org, device, _user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.DISCOUNTED_NONTAXABLE_PAYLOAD, org)
+        with patch('invoices.pipeline.submit_to_zatca', return_value={'status_code': 200}):
+            invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        prices = compute_item_unit_prices_after_discount(invoice)
+
+        self.assertEqual(prices[1], Decimal('16.6667'))
+        self.assertEqual(prices[2], Decimal('16.6667'))
+        self.assertEqual(prices[3], Decimal('33.3333'))
+        self.assertEqual(prices[4], Decimal('33.3333'))
+
+    def test_compute_item_unit_prices_after_discount_mixed(self):
+        org, device, _user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.DISCOUNTED_MIXED_PAYLOAD, org)
+        with patch('invoices.pipeline.submit_to_zatca', return_value={'status_code': 200}):
+            invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        prices = compute_item_unit_prices_after_discount(invoice)
+
+        self.assertEqual(prices[1], Decimal('80.0000'))  # S item: 100 - (100/100*20)
+        self.assertEqual(prices[2], Decimal('90.0000'))  # Z item: 100 - (100/100*10)
+
     @patch('invoices.pipeline.submit_to_zatca')
-    def test_returning_all_items_preserves_the_full_discount(self, mock_submit):
+    def test_returning_all_items_with_discounted_prices_preserves_the_full_discount(self, mock_submit):
         mock_submit.return_value = {'status_code': 200}
         org, device, _user = self._make_org_with_signing_device()
         validated_data, resolved_device = self._validated(self.DISCOUNTED_NONTAXABLE_PAYLOAD, org)
         invoice = process_invoice_submission(org, resolved_device, validated_data)
 
+        # Once the discount is baked into each item's price, the credit note
+        # itself carries no separate document-level discount.
+        prices = compute_item_unit_prices_after_discount(invoice)
+        items = [{**item, 'price': str(prices[item['slno']])} for item in invoice.payload['items']]
         credit_note = create_custom_return_credit_note(
             org, device, invoice,
-            items=invoice.payload['items'],
+            items=items,
             issue_date=date(2026, 7, 20),
             issue_time=time(23, 59),
             reason='full return via custom form',
         )
 
-        self.assertEqual(credit_note.payload['doc_level_discount_novat'], '50.00')
+        self.assertEqual(credit_note.payload['doc_level_discount_novat'], '0.00')
         totals = _compute_totals(
             credit_note.payload['items'],
             credit_note.payload['doc_level_discount_vat'],
@@ -1247,42 +1276,112 @@ class CustomReturnInvoiceFlowTests(TestCase):
         self.assertEqual(totals['tax_inclusive'], Decimal('100.00'))
 
     @patch('invoices.pipeline.submit_to_zatca')
-    def test_partial_return_scales_the_discount_proportionally(self, mock_submit):
+    def test_partial_return_with_discounted_prices_reflects_proportional_share(self, mock_submit):
         mock_submit.return_value = {'status_code': 200}
         org, device, _user = self._make_org_with_signing_device()
         validated_data, resolved_device = self._validated(self.DISCOUNTED_NONTAXABLE_PAYLOAD, org)
         invoice = process_invoice_submission(org, resolved_device, validated_data)
 
-        # Return just the first two items: 50 of the invoice's 150 non-taxable total.
+        # Return just the first two items, at their discounted default price.
+        prices = compute_item_unit_prices_after_discount(invoice)
+        items = [
+            {**item, 'price': str(prices[item['slno']])} for item in invoice.payload['items'][:2]
+        ]
         credit_note = create_custom_return_credit_note(
             org, device, invoice,
-            items=invoice.payload['items'][:2],
+            items=items,
             issue_date=date(2026, 7, 20),
             issue_time=time(23, 59),
             reason='partial return',
         )
 
-        # 50.00 * (50 / 150), rounded half-up to 2dp — neither zeroed nor the full discount.
-        self.assertEqual(credit_note.payload['doc_level_discount_novat'], '16.67')
+        self.assertEqual(credit_note.payload['doc_level_discount_novat'], '0.00')
+        totals = _compute_totals(
+            credit_note.payload['items'],
+            credit_note.payload['doc_level_discount_vat'],
+            credit_note.payload['doc_level_discount_novat'],
+            credit_note.payload['advance_paid'],
+        )
+        # 16.6667 + 16.6667 = 33.3334, rounded half-up to 2dp.
+        self.assertEqual(totals['tax_inclusive'], Decimal('33.33'))
 
     @patch('invoices.pipeline.submit_to_zatca')
-    def test_returning_only_taxable_items_zeroes_the_nontaxable_discount(self, mock_submit):
+    def test_returning_only_taxable_item_with_discounted_price(self, mock_submit):
         mock_submit.return_value = {'status_code': 200}
         org, device, _user = self._make_org_with_signing_device()
         validated_data, resolved_device = self._validated(self.DISCOUNTED_MIXED_PAYLOAD, org)
         invoice = process_invoice_submission(org, resolved_device, validated_data)
 
+        prices = compute_item_unit_prices_after_discount(invoice)
         s_item = next(i for i in invoice.payload['items'] if i['vat_type'] == 'S')
+        item = {**s_item, 'price': str(prices[s_item['slno']])}
         credit_note = create_custom_return_credit_note(
             org, device, invoice,
-            items=[s_item],
+            items=[item],
             issue_date=date(2026, 7, 20),
             issue_time=time(23, 59),
             reason='taxable item only',
         )
 
-        self.assertEqual(credit_note.payload['doc_level_discount_vat'], '20.00')
+        self.assertEqual(credit_note.payload['doc_level_discount_vat'], '0.00')
         self.assertEqual(credit_note.payload['doc_level_discount_novat'], '0.00')
+        totals = _compute_totals(
+            credit_note.payload['items'],
+            credit_note.payload['doc_level_discount_vat'],
+            credit_note.payload['doc_level_discount_novat'],
+            credit_note.payload['advance_paid'],
+        )
+        # 80.00 taxable, 15% VAT = 12.00 -> 92.00, same result as the previous
+        # doc-level-discount approach, now expressed per item instead.
+        self.assertEqual(totals['tax_inclusive'], Decimal('92.00'))
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_view_get_prefills_unit_price_net_of_discount(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.DISCOUNTED_MIXED_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        self.client.force_login(user)
+        response = self.client.get(reverse('organization:invoice-return-custom', args=[org.pk, invoice.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        initial_prices = {form.initial['slno']: form.initial['price'] for form in response.context['formset']}
+        self.assertEqual(initial_prices[1], Decimal('80.0000'))
+        self.assertEqual(initial_prices[2], Decimal('90.0000'))
+
+    @patch('invoices.pipeline.submit_to_zatca')
+    def test_view_post_with_prefilled_discounted_price_yields_correct_total(self, mock_submit):
+        mock_submit.return_value = {'status_code': 200}
+        org, device, user = self._make_org_with_signing_device()
+        validated_data, resolved_device = self._validated(self.DISCOUNTED_MIXED_PAYLOAD, org)
+        invoice = process_invoice_submission(org, resolved_device, validated_data)
+
+        self.client.force_login(user)
+        data = {
+            'form-TOTAL_FORMS': '2', 'form-INITIAL_FORMS': '2', 'form-MIN_NUM_FORMS': '0', 'form-MAX_NUM_FORMS': '1000',
+            'form-0-slno': '1', 'form-0-code': 'ITEM-S1', 'form-0-name': 'Consultation',
+            'form-0-vat_type': 'S', 'form-0-include': 'on', 'form-0-qty': '1.0000', 'form-0-price': '80.0000',
+            'form-1-slno': '2', 'form-1-code': 'ITEM-Z1', 'form-1-name': 'Lab Test',
+            'form-1-vat_type': 'Z', 'form-1-qty': '1.0000', 'form-1-price': '90.0000',
+            'issue_date': '2026-07-20', 'issue_time': '23:59', 'system_return_number': '', 'reason': 'full return',
+        }
+        data['form-1-include'] = 'on'
+        response = self.client.post(
+            reverse('organization:invoice-return-custom', args=[org.pk, invoice.pk]), data,
+        )
+
+        self.assertRedirects(response, reverse('organization:invoice-list', args=[org.pk]))
+        credit_note = InvoiceSubmission.objects.get(document_type=InvoiceSubmission.DOCUMENT_TYPE_CREDIT_NOTE)
+        totals = _compute_totals(
+            credit_note.payload['items'],
+            credit_note.payload['doc_level_discount_vat'],
+            credit_note.payload['doc_level_discount_novat'],
+            credit_note.payload['advance_paid'],
+        )
+        # 80 taxable (+12.00 VAT) + 90 non-taxable = 182.00, matching what the
+        # invoice actually charged (100+100 gross minus its 20+10 discount).
+        self.assertEqual(totals['tax_inclusive'], Decimal('182.00'))
 
 
 class DebitNoteTests(TestCase):

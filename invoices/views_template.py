@@ -29,6 +29,7 @@ from .qr import generate_qr_image_data_uri
 from .serializers import InvoiceSubmissionSerializer
 from .services import (
     DuplicateReturnNumberError,
+    compute_item_unit_prices_after_discount,
     create_custom_return_credit_note,
     create_debit_note,
     create_return_credit_note,
@@ -499,6 +500,7 @@ class CustomReturnInvoiceFormView(LoginRequiredMixin, OrgScopedMixin, View):
         return super().dispatch(request, *args, **kwargs)
 
     def _initial_items(self):
+        discounted_prices = compute_item_unit_prices_after_discount(self.invoice)
         return [
             {
                 "slno": item["slno"],
@@ -507,7 +509,7 @@ class CustomReturnInvoiceFormView(LoginRequiredMixin, OrgScopedMixin, View):
                 "vat_type": item["vat_type"],
                 "include": True,
                 "qty": item["qty"],
-                "price": item["price"],
+                "price": discounted_prices.get(item["slno"], item["price"]),
             }
             for item in self.invoice.payload.get("items", [])
         ]
