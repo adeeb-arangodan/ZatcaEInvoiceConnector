@@ -316,7 +316,7 @@ def build_invoice_xml(validated_data, organization, device, icv, pih):
 
         il = _sub(root, CAC, 'InvoiceLine')
         _sub(il, CBC, 'ID', str(item['slno']))
-        qty_el = _sub(il, CBC, 'InvoicedQuantity', str(qty.normalize()))
+        qty_el = _sub(il, CBC, 'InvoicedQuantity', format(qty.normalize(), 'f'))
         qty_el.set('unitCode', 'PCE')
         _sub(il, CBC, 'LineExtensionAmount', str(line_amount), currencyID='SAR')
         il_tax = _sub(il, CAC, 'TaxTotal')
